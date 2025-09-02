@@ -91,13 +91,12 @@ def analyse_chart(img):
     else:
         ai_analysis += "إشارة غير مؤكدة، يفضل عدم اتخاذ الإشارة."
     
-    # 8. القرار النهائي
-    final_decision = "⚠️ ضعيفة - لا تنفذ صفقة"
-    if total_strength >= 70:
-        if (last_green > last_red and macd_latest > signal_latest) or (bb_signal == "📈 Call" and RSI > 50):
-            final_decision = "📈 صعود"
-        else:
-            final_decision = "📉 هبوط"
+    # 8. القرار النهائي (تم تعديله)
+    final_decision = ""
+    if (last_green > last_red and macd_latest > signal_latest) or (bb_signal == "📈 Call" and RSI > 50):
+        final_decision = "📈 صعود"
+    else:
+        final_decision = "📉 هبوط"
 
     return {
         'final_decision': final_decision,
