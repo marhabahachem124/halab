@@ -2,7 +2,7 @@ import streamlit as st
 import websocket
 import json
 import pandas as pd
-import ta
+import talib
 import time
 
 # إعدادات الصفحة والأيقونة
@@ -19,8 +19,8 @@ def ticks_to_ohlc(ticks_df, timeframe_seconds):
     ticks_df['timestamp'] = pd.to_datetime(ticks_df['timestamp'], unit='s')
     ticks_df.set_index('timestamp', inplace=True)
     
-    ohlc_data = ticks_df['price'].resample(f'{timeframe_seconds}S').ohlc()
-    ohlc_data['Volume'] = ticks_df['price'].resample(f'{timeframe_seconds}S').count()
+    ohlc_data = ticks_df['price'].resample(f'{timeframe_seconds}s').ohlc()
+    ohlc_data['Volume'] = ticks_df['price'].resample(f'{timeframe_seconds}s').count()
     
     ohlc_data.dropna(inplace=True)
     ohlc_data.reset_index(inplace=True)
@@ -37,16 +37,11 @@ def analyse_data(data):
         
         data = data.tail(30).copy()
 
-        # إضافة المؤشرات
-        data['RSI'] = ta.momentum.RSIIndicator(data['Close']).rsi()
-        data['MACD'] = ta.trend.MACD(data['Close']).macd()
-        data['MACD_Signal'] = ta.trend.MACD(data['Close']).macd_signal()
-        data['Awesome_Oscillator'] = ta.momentum.AwesomeOscillator(data['High'], data['Low']).awesome_oscillator()
-        data['ROC'] = ta.momentum.ROCIndicator(data['Close']).roc()
-        data['Stoch_K'] = ta.momentum.StochasticOscillator(data['High'], data['Low'], data['Close']).stoch()
-        data['Bollinger_Bands_PctB'] = ta.volatility.BollingerBands(data['Close']).bollinger_pband()
-        data['ADX'] = ta.trend.ADXIndicator(data['High'], data['Low'], data['Close']).adx()
-        data['MFI'] = ta.volume.MFIIndicator(data['High'], data['Low'], data['Close'], data['Volume']).money_flow_index()
+        # إضافة المؤشرات باستخدام talib
+        data['RSI'] = talib.RSI(data['Close'].values)
+        data['MACD'], data['MACD_Signal'], _ = talib.MACD(data['Close'].values)
+        data['ADX'] = talib.ADX(data['High'].values, data['Low'].values, data['Close'].values)
+        data['Stoch_K'], data['Stoch_D'] = talib.STOCH(data['High'].values, data['Low'].values, data['Close'].values)
 
         # --- نظام النقاط الأقوى والأكثر تطوراً ---
         score = 0
@@ -79,16 +74,6 @@ def analyse_data(data):
         elif data['MACD'].iloc[-1] < data['MACD_Signal'].iloc[-1] and data['MACD'].iloc[-2] >= data['MACD_Signal'].iloc[-2]:
             score -= 20
         
-        if data['Awesome_Oscillator'].iloc[-1] > 0 and data['Awesome_Oscillator'].iloc[-2] <= 0:
-            score += 15
-        elif data['Awesome_Oscillator'].iloc[-1] < 0 and data['Awesome_Oscillator'].iloc[-2] >= 0:
-            score -= 15
-
-        if data['ROC'].iloc[-1] > 0:
-            score += 10
-        elif data['ROC'].iloc[-1] < 0:
-            score -= 10
-            
         if data['RSI'].iloc[-1] > 70:
             score -= 10
         elif data['RSI'].iloc[-1] < 30:
@@ -99,22 +84,12 @@ def analyse_data(data):
         elif data['Stoch_K'].iloc[-1] < 20:
             score += 10
             
-        if data['Bollinger_Bands_PctB'].iloc[-1] > 1.0:
-            score -= 5
-        elif data['Bollinger_Bands_PctB'].iloc[-1] < 0.0:
-            score += 5
-        
         if data['ADX'].iloc[-1] > 25:
             if data.iloc[-1]['Close'] > data.iloc[-1]['Open']:
                 score += 5
             else:
                 score -= 5
                 
-        if data['MFI'].iloc[-1] > 80:
-            score -= 5
-        elif data['MFI'].iloc[-1] < 20:
-            score += 5
-
         final_decision = "⚠️ متعادل"
         total_strength = 50
 
