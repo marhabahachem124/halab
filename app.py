@@ -1,6 +1,9 @@
 import streamlit as st
-import cv2
+import yfinance as yf
+import pandas as pd
 import numpy as np
+import ta
+import time
 
 # إعدادات الصفحة والأيقونة
 st.set_page_config(
@@ -8,115 +11,140 @@ st.set_page_config(
     page_icon="https://i.imgur.com/KHOURYBOT_Logo.png"
 )
 
-# دالة لتحليل شمعة واحدة وتحديد نوعها
-def get_candle_info(roi):
-    h, w, _ = roi.shape
-    green_mask = np.all(roi > [100, 150, 100], axis=2)
-    red_mask = np.all(roi > [150, 100, 100], axis=2)
-    
-    green_pixels = np.sum(green_mask)
-    red_pixels = np.sum(red_mask)
+# دالة تحليل البيانات من API
+def analyse_data(symbol, timeframe):
+    try:
+        data = yf.download(symbol, period='1mo', interval=timeframe)
+        if data.empty or len(data) < 20:
+            st.error("خطأ: لا توجد بيانات كافية لرمز الزوج المحدد.")
+            return None
 
-    candle_color = "green" if green_pixels > red_pixels else "red"
-    body_pixels = max(green_pixels, red_pixels)
-    total_pixels = np.sum(green_mask | red_mask)
-    
-    # نسبة جسم الشمعة إلى الذيل
-    body_ratio = body_pixels / total_pixels if total_pixels > 0 else 0
+        data = data.tail(20)
 
-    return {
-        'color': candle_color,
-        'body_ratio': body_ratio,
-        'body_pixels': body_pixels
-    }
+        # إضافة المؤشرات الجديدة
+        data['RSI'] = ta.momentum.RSIIndicator(data['Close']).rsi()
+        data['MACD'] = ta.trend.MACD(data['Close']).macd()
+        data['MACD_Signal'] = ta.trend.MACD(data['Close']).macd_signal()
 
-# دالة تحليل الشارت
-def analyse_chart(img):
-    h, w, _ = img.shape
-    
-    # التحليل يركز على آخر 7 شموع فقط
-    candles = 7
-    startX = int(w * 0.7)
-    candleWidth = max(1, int((w - startX) / candles))
-
-    candle_data = []
-    for c in range(candles):
-        x = startX + c * candleWidth
-        roi = img[:, x:x+candleWidth]
-        candle_data.append(get_candle_info(roi))
-    
-    # --- منطق التحليل الأكثر قوة ---
-
-    # 1. البحث عن أنماط الشموع (الأولوية القصوى)
-    final_decision = "⚠️ متعادل - لا توجد إشارة"
-    total_strength = 0
-    
-    # نمط الابتلاع الصعودي (Bullish Engulfing)
-    if candles >= 2 and candle_data[-1]['color'] == 'green' and candle_data[-2]['color'] == 'red':
-        if candle_data[-1]['body_pixels'] > candle_data[-2]['body_pixels'] * 1.5:
-            final_decision = "📈 صعود"
-            total_strength = 90
+        # --- نظام النقاط الأكثر تطوراً ---
+        score = 0
+        
+        # 1. نقاط الاتجاه العام
+        up_candles = sum(1 for i, row in data.iterrows() if row['Close'] > row['Open'])
+        down_candles = sum(1 for i, row in data.iterrows() if row['Close'] < row['Open'])
+        score += (up_candles - down_candles) * 2
+        
+        # 2. نقاط الزخم (للشموع الخمس الأخيرة)
+        recent_data = data.tail(5)
+        recent_up = sum(1 for i, row in recent_data.iterrows() if row['Close'] > row['Open'])
+        recent_down = sum(1 for i, row in recent_data.iterrows() if row['Close'] < row['Open'])
+        score += (recent_up - recent_down) * 3
+        
+        # 3. نقاط أنماط الشموع
+        if len(data) >= 2:
+            last_candle = data.iloc[-1]
+            prev_candle = data.iloc[-2]
             
-    # نمط الابتلاع الهبوطي (Bearish Engulfing)
-    elif candles >= 2 and candle_data[-1]['color'] == 'red' and candle_data[-2]['color'] == 'green':
-        if candle_data[-1]['body_pixels'] > candle_data[-2]['body_pixels'] * 1.5:
-            final_decision = "📉 هبوط"
-            total_strength = 90
-    
-    # نمط المطرقة (Hammer) أو الشهاب (Shooting Star)
-    elif candle_data[-1]['body_ratio'] < 0.3 and candle_data[-1]['body_pixels'] > 100: # شمعة بجسم صغير وذيل طويل
-        if candle_data[-1]['color'] == 'green': # المطرقة
+            if last_candle['Close'] > last_candle['Open'] and prev_candle['Close'] < prev_candle['Open']:
+                if (last_candle['Close'] - last_candle['Open']) > abs(prev_candle['Close'] - prev_candle['Open']) * 1.5:
+                    score += 20
+            
+            elif last_candle['Close'] < last_candle['Open'] and prev_candle['Close'] > prev_candle['Open']:
+                if abs(last_candle['Close'] - last_candle['Open']) > abs(prev_candle['Close'] - prev_candle['Open']) * 1.5:
+                    score -= 20
+            
+            body = abs(last_candle['Close'] - last_candle['Open'])
+            total_range = last_candle['High'] - last_candle['Low']
+            if total_range > 0 and body / total_range < 0.3:
+                if last_candle['Close'] > last_candle['Open']:
+                    score += 15
+                else:
+                    score -= 15
+
+        # 4. نقاط مؤشر RSI
+        if data['RSI'].iloc[-1] > 70:
+            score -= 10 # ذروة شراء، قد يحدث انعكاس هبوطي
+        elif data['RSI'].iloc[-1] < 30:
+            score += 10 # ذروة بيع، قد يحدث انعكاس صعودي
+
+        # 5. نقاط مؤشر MACD
+        if data['MACD'].iloc[-1] > data['MACD_Signal'].iloc[-1] and data['MACD'].iloc[-2] <= data['MACD_Signal'].iloc[-2]:
+            score += 20 # تقاطع صعودي قوي
+        elif data['MACD'].iloc[-1] < data['MACD_Signal'].iloc[-1] and data['MACD'].iloc[-2] >= data['MACD_Signal'].iloc[-2]:
+            score -= 20 # تقاطع هبوطي قوي
+
+        # 6. تحديد الإشارة النهائية
+        final_decision = "⚠️ متعادل"
+        total_strength = 50
+
+        if score > 0:
             final_decision = "📈 صعود"
-            total_strength = 80
-        else: # الشهاب
+            total_strength = min(100, 50 + score)
+        elif score < 0:
             final_decision = "📉 هبوط"
-            total_strength = 80
-    
-    # 2. منطق الزخم (في حال عدم وجود أنماط واضحة)
-    if total_strength == 0:
-        up_votes = sum(1 for c in candle_data if c['color'] == 'green')
-        down_votes = sum(1 for c in candle_data if c['color'] == 'red')
+            total_strength = min(100, 50 + abs(score))
+        
+        last_candle_is_up = data.iloc[-1]['Close'] > data.iloc[-1]['Open']
+        if (final_decision == "📈 صعود" and not last_candle_is_up) or \
+           (final_decision == "📉 هبوط" and last_candle_is_up):
+            final_decision = "⚠️ الإشارة غير مؤكدة"
+            total_strength = 0
 
-        if up_votes > down_votes:
-            final_decision = "📈 صعود"
-            total_strength = int((up_votes / candles) * 100)
-        elif down_votes > up_votes:
-            final_decision = "📉 هبوط"
-            total_strength = int((down_votes / candles) * 100)
-        else:
-            final_decision = "⚠️ متعادل - لا توجد إشارة"
-            total_strength = 50
+        if final_decision == "⚠️ متعادل":
+            if last_candle_is_up:
+                final_decision = "📈 صعود"
+                total_strength = 50
+            else:
+                final_decision = "📉 هبوط"
+                total_strength = 50
 
-    # 3. شرط التأكيد النهائي
-    # الإشارة يجب أن تتوافق مع لون الشمعة الأخيرة
-    if (final_decision == "📈 صعود" and candle_data[-1]['color'] != 'green') or \
-       (final_decision == "📉 هبوط" and candle_data[-1]['color'] != 'red'):
-        final_decision = "⚠️ لا توجد إشارة واضحة - لا يوجد تأكيد"
-        total_strength = 0
+        return {
+            'final_decision': final_decision,
+            'total_strength': total_strength
+        }
 
-    return {
-        'final_decision': final_decision,
-        'total_strength': total_strength
-    }
+    except Exception as e:
+        st.error(f"حدث خطأ: {e}")
+        return None
 
 # --- تصميم الواجهة باستخدام Streamlit ---
 
-st.title("WELCOME WITH KHOURYBOT")
+st.title("WELCOME WITH KHOURYBOT 🤖")
 st.markdown("---")
 
-st.header("قم بتحميل صورة الشارت هنا لتحليلها:")
+st.header("قم باختيار الزوج والفريم لتحليل السوق:")
 
-uploaded_file = st.file_uploader("اختر صورة شارت", type=["jpg", "jpeg", "png"])
+col1, col2 = st.columns(2)
 
-if uploaded_file is not None:
-    st.image(uploaded_file, caption='الصورة التي تم تحميلها', use_column_width=True)
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+with col1:
+    symbol_map = {
+        'EUR/USD': 'EURUSD=X',
+        'EUR/GBP': 'EURGBP=X',
+        'EUR/JPY': 'EURJPY=X'
+    }
+    selected_pair_name = st.selectbox(
+        'اختر زوج العملات:',
+        options=list(symbol_map.keys())
+    )
+    selected_symbol = symbol_map[selected_pair_name]
 
-    if st.button('حلل الشارت الآن'):
-        with st.spinner('جاري التحليل... يرجى الانتظار'):
-            results = analyse_chart(img)
-            
+with col2:
+    timeframe_map = {
+        '1 دقيقة': '1m',
+        '5 دقائق': '5m'
+    }
+    selected_timeframe_name = st.selectbox(
+        'اختر الفريم الزمني:',
+        options=list(timeframe_map.keys())
+    )
+    selected_timeframe = timeframe_map[selected_timeframe_name]
+
+if st.button('احصل على الإشارة الآن'):
+    with st.spinner('جاري التحليل... يرجى الانتظار'):
+        time.sleep(1) 
+        results = analyse_data(selected_symbol, selected_timeframe)
+        
+        if results:
             st.markdown("---")
             st.header("نتائج التحليل والإشارة:")
             st.success("🎉 تم التحليل بنجاح! إليك الإشارة:")
@@ -125,6 +153,4 @@ if uploaded_file is not None:
             st.markdown(f"## **قوتها**: {results['total_strength']}%")
             
             st.markdown("---")
-            st.info("💡 ملاحظة: التحليل يعتمد على خوارزميات الذكاء الاصطناعي وقد لا يكون دقيقاً بنسبة 100%. الرجاء استخدامه كأداة مساعدة.")
-else:
-    st.info("👆 يرجى تحميل صورة شارت للبدء بالتحليل.")
+            st.info("💡 ملاحظة: التحليل يعتمد على بيانات السوق اللحظية. يرجى استخدامه كأداة مساعدة في اتخاذ القرار.")
