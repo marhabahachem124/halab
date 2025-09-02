@@ -4,6 +4,7 @@ import json
 import pandas as pd
 import ta
 import time
+import numpy as np
 
 # إعدادات الصفحة والأيقونة
 st.set_page_config(
@@ -28,132 +29,128 @@ def ticks_to_ohlc(ticks_df, timeframe_seconds):
     
     return ohlc_data
 
-# دالة تحليل البيانات
-def analyse_data(data):
-    try:
-        if data.empty or len(data) < 30:
-            st.error("خطأ: لا توجد بيانات كافية للتحليل. يرجى المحاولة مرة أخرى.")
-            return None
-        
-        data = data.tail(30).copy()
+# دالة لتحديد مناطق الدعم والمقاومة
+def find_support_resistance(data):
+    highs = data['High'].iloc[-50:]
+    lows = data['Low'].iloc[-50:]
+    
+    support = lows.min()
+    resistance = highs.max()
+    
+    return support, resistance
 
-        # إضافة المؤشرات باستخدام ta
+# دالة لتحليل أنماط الشموع
+def analyze_candlesticks(data):
+    score = 0
+    
+    if len(data) >= 2:
+        last = data.iloc[-1]
+        prev = data.iloc[-2]
+        
+        # Bullish Engulfing
+        if (last['Close'] > last['Open'] and prev['Close'] < prev['Open'] and
+            last['High'] > prev['High'] and last['Low'] < prev['Low']):
+            score += 30
+            st.info("💡 تم رصد نمط شمعة **ابتلاعية صعودية** قوية.")
+        
+        # Bearish Engulfing
+        if (last['Close'] < last['Open'] and prev['Close'] > prev['Open'] and
+            last['High'] > prev['High'] and last['Low'] < prev['Low']):
+            score -= 30
+            st.info("💡 تم رصد نمط شمعة **ابتلاعية هبوطية** قوية.")
+
+        # Hammer & Shooting Star
+        body = abs(last['Close'] - last['Open'])
+        lower_shadow = last['Open'] - last['Low'] if last['Open'] > last['Close'] else last['Close'] - last['Low']
+        upper_shadow = last['High'] - last['Close'] if last['Open'] > last['Close'] else last['High'] - last['Open']
+        
+        if last['Close'] > last['Open'] and lower_shadow > body * 2 and upper_shadow < body:
+            score += 20
+            st.info("💡 تم رصد نمط شمعة **مطرقة** قوية.")
+        
+        if last['Close'] < last['Open'] and upper_shadow > body * 2 and lower_shadow < body:
+            score -= 20
+            st.info("💡 تم رصد نمط شمعة **نجم الرماية** قوية.")
+            
+    return score
+
+# دالة تحليل البيانات
+def analyse_data(data, timeframe_name):
+    try:
+        if data.empty or len(data) < 50:
+            return None, "خطأ: لا توجد بيانات كافية للتحليل (أقل من 50 شمعة)."
+
+        data = data.tail(50).copy()
+
+        # إضافة المؤشرات
         data['RSI'] = ta.momentum.RSIIndicator(data['Close']).rsi()
         data['MACD'] = ta.trend.MACD(data['Close']).macd()
         data['MACD_Signal'] = ta.trend.MACD(data['Close']).macd_signal()
-        # تعديل استدعاء Awesome Oscillator لتجنب الخطأ السابق
         data['Awesome_Oscillator'] = ta.momentum.awesome_oscillator(data['High'], data['Low'])
         data['ROC'] = ta.momentum.ROCIndicator(data['Close']).roc()
         data['Stoch_K'] = ta.momentum.StochasticOscillator(data['High'], data['Low'], data['Close']).stoch()
         data['Bollinger_Bands_PctB'] = ta.volatility.BollingerBands(data['Close']).bollinger_pband()
         data['ADX'] = ta.trend.ADXIndicator(data['High'], data['Low'], data['Close']).adx()
         data['MFI'] = ta.volume.MFIIndicator(data['High'], data['Low'], data['Close'], data['Volume']).money_flow_index()
-        
-        # --- نظام النقاط الأقوى والأكثر تطوراً ---
+        data['Aroon_Up'] = ta.trend.AroonIndicator(data['Close']).aroon_up()
+        data['Aroon_Down'] = ta.trend.AroonIndicator(data['Close']).aroon_down()
+        data['Vortex_P'] = ta.trend.VortexIndicator(data['High'], data['Low'], data['Close']).vortex_indicator_pos()
+        data['Vortex_N'] = ta.trend.VortexIndicator(data['High'], data['Low'], data['Close']).vortex_indicator_neg()
+        data['SAR'] = ta.trend.PSARIndicator(data['High'], data['Low'], data['Close']).psar()
+
+        # --- نظام النقاط الجديد والمتقدم ---
         score = 0
+        last_close = data.iloc[-1]['Close']
+        last_candle_is_up = last_close > data.iloc[-1]['Open']
         
-        up_candles = sum(1 for i, row in data.iterrows() if row['Close'] > row['Open'])
-        down_candles = sum(1 for i, row in data.iterrows() if row['Close'] < row['Open'])
-        score += (up_candles - down_candles) * 5
+        # 1. تحليل أنماط الشموع (وزن عالي جداً)
+        candlestick_score = analyze_candlesticks(data)
+        score += candlestick_score
         
-        if len(data) >= 2:
-            last_candle = data.iloc[-1]
-            prev_candle = data.iloc[-2]
-            
-            if last_candle['Close'] > last_candle['Open'] and prev_candle['Close'] < prev_candle['Open']:
-                if (last_candle['Close'] - last_candle['Open']) > abs(prev_candle['Close'] - prev_candle['Open']) * 1.5:
-                    score += 20
-            elif last_candle['Close'] < last_candle['Open'] and prev_candle['Close'] > prev_candle['Open']:
-                if abs(last_candle['Close'] - last_candle['Open']) > abs(prev_candle['Close'] - prev_candle['Open']) * 1.5:
-                    score -= 20
-            
-            body = abs(last_candle['Close'] - last_candle['Open'])
-            total_range = last_candle['High'] - last_candle['Low']
-            if total_range > 0 and body / total_range < 0.3:
-                if last_candle['Close'] > last_candle['Open']:
-                    score += 15
-                else:
-                    score -= 15
+        # 2. تحليل مناطق الدعم والمقاومة (وزن عالي)
+        support, resistance = find_support_resistance(data)
+        if last_close > resistance * 1.0001: score += 40
+        elif last_close < support * 0.9999: score -= 40
+        if last_close < resistance and last_close > resistance * 0.9999: score -= 25
+        if last_close > support and last_close < support * 1.0001: score += 25
+        
+        # 3. تحليل الزخم والمؤشرات (وزن متوسط)
+        if data['MACD'].iloc[-1] > data['MACD_Signal'].iloc[-1]: score += 15
+        elif data['MACD'].iloc[-1] < data['MACD_Signal'].iloc[-1]: score -= 15
+        
+        if data['Awesome_Oscillator'].iloc[-1] > 0: score += 10
+        elif data['Awesome_Oscillator'].iloc[-1] < 0: score -= 10
 
-        if data['MACD'].iloc[-1] > data['MACD_Signal'].iloc[-1] and data['MACD'].iloc[-2] <= data['MACD_Signal'].iloc[-2]:
-            score += 20
-        elif data['MACD'].iloc[-1] < data['MACD_Signal'].iloc[-1] and data['MACD'].iloc[-2] >= data['MACD_Signal'].iloc[-2]:
-            score -= 20
+        if data['ROC'].iloc[-1] > 0: score += 10
+        elif data['ROC'].iloc[-1] < 0: score -= 10
         
-        if data['Awesome_Oscillator'].iloc[-1] > 0 and data['Awesome_Oscillator'].iloc[-2] <= 0:
-            score += 15
-        elif data['Awesome_Oscillator'].iloc[-1] < 0 and data['Awesome_Oscillator'].iloc[-2] >= 0:
-            score -= 15
-
-        if data['ROC'].iloc[-1] > 0:
-            score += 10
-        elif data['ROC'].iloc[-1] < 0:
-            score -= 10
-            
-        if data['RSI'].iloc[-1] > 70:
-            score -= 10
-        elif data['RSI'].iloc[-1] < 30:
-            score += 10
-            
-        if data['Stoch_K'].iloc[-1] > 80:
-            score -= 10
-        elif data['Stoch_K'].iloc[-1] < 20:
-            score += 10
-            
-        if data['Bollinger_Bands_PctB'].iloc[-1] > 1.0:
-            score -= 5
-        elif data['Bollinger_Bands_PctB'].iloc[-1] < 0.0:
-            score += 5
+        # 4. المؤشرات الأخرى (وزن أقل)
+        if data['RSI'].iloc[-1] > 70: score -= 10
+        elif data['RSI'].iloc[-1] < 30: score += 10
         
-        if data['ADX'].iloc[-1] > 25:
-            if data.iloc[-1]['Close'] > data.iloc[-1]['Open']:
-                score += 5
-            else:
-                score -= 5
-                
-        if data['MFI'].iloc[-1] > 80:
-            score -= 5
-        elif data['MFI'].iloc[-1] < 20:
-            score += 5
-
+        if data['Stoch_K'].iloc[-1] > 80: score -= 10
+        elif data['Stoch_K'].iloc[-1] < 20: score += 10
+        
+        if data['Aroon_Up'].iloc[-1] > data['Aroon_Down'].iloc[-1] and data['Aroon_Up'].iloc[-1] > 50: score += 10
+        elif data['Aroon_Down'].iloc[-1] > data['Aroon_Up'].iloc[-1] and data['Aroon_Down'].iloc[-1] > 50: score -= 10
+        
+        if data['Vortex_P'].iloc[-1] > data['Vortex_N'].iloc[-1]: score += 10
+        elif data['Vortex_P'].iloc[-1] < data['Vortex_N'].iloc[-1]: score -= 10
+        
+        if data.iloc[-1]['Close'] > data['SAR'].iloc[-1]: score += 15
+        elif data.iloc[-1]['Close'] < data['SAR'].iloc[-1]: score -= 15
+        
         final_decision = "⚠️ متعادل"
-        total_strength = 50
-
-        if score > 0:
-            final_decision = "📈 صعود"
-            total_strength = min(100, 50 + score)
-        elif score < 0:
-            final_decision = "📉 هبوط"
-            total_strength = min(100, 50 + abs(score))
+        if score > 30: final_decision = "📈 صعود"
+        elif score < -30: final_decision = "📉 هبوط"
         
-        last_candle_is_up = data.iloc[-1]['Close'] > data.iloc[-1]['Open']
-
-        if (final_decision == "📈 صعود" and not last_candle_is_up):
-            final_decision = "📉 هبوط"
-            total_strength = min(100, 50 + abs(score))
-        elif (final_decision == "📉 هبوط" and last_candle_is_up):
-            final_decision = "📈 صعود"
-            total_strength = min(100, 50 + abs(score))
-            
-        if final_decision == "⚠️ متعادل":
-            if last_candle_is_up:
-                final_decision = "📈 صعود"
-                total_strength = 50
-            else:
-                final_decision = "📉 هبوط"
-                total_strength = 50
+        return final_decision, None
         
-        return {
-            'final_decision': final_decision,
-            'total_strength': total_strength
-        }
-
     except Exception as e:
-        st.error(f"حدث خطأ في التحليل: {e}")
-        return None
+        return None, f"حدث خطأ في التحليل: {e}"
 
 # دالة الاتصال بـ WebSocket مع إعادة المحاولة
-def fetch_data_from_websocket(symbol, max_retries=3):
+def fetch_data_from_websocket(symbol, count, max_retries=3):
     retries = 0
     while retries < max_retries:
         try:
@@ -161,10 +158,9 @@ def fetch_data_from_websocket(symbol, max_retries=3):
             request = {
                 "ticks_history": symbol,
                 "end": "latest",
-                "count": 5000,
+                "count": count,
                 "style": "ticks"
             }
-            
             ws.send(json.dumps(request))
             response = json.loads(ws.recv())
             ws.close()
@@ -178,72 +174,63 @@ def fetch_data_from_websocket(symbol, max_retries=3):
                 retries += 1
                 time.sleep(1)
                 st.info(f"فشل في جلب التيكات. جاري إعادة المحاولة ({retries}/{max_retries})...")
-
         except Exception as e:
             retries += 1
             time.sleep(1)
             st.warning(f"خطأ في الاتصال. جاري إعادة المحاولة ({retries}/{max_retries})...")
-            
     st.error("فشل جلب البيانات بعد عدة محاولات.")
     return pd.DataFrame()
 
 
 # --- تصميم الواجهة باستخدام Streamlit ---
-
 st.title("WELCOME WITH KHOURYBOT 🤖")
 st.markdown("---")
-
-st.header("قم باختيار الزوج والفريم لتحليل السوق:")
+st.header("تحليل الفريمات المتعددة لتحديد إشارة قوية:")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    symbol_map = {
-        'EUR/USD': 'frxEURUSD',
-        'EUR/GBP': 'frxEURGBP',
-        'EUR/JPY': 'frxEURJPY'
-    }
-    selected_pair_name = st.selectbox(
-        'اختر زوج العملات:',
-        options=list(symbol_map.keys())
-    )
+    symbol_map = {'EUR/USD': 'frxEURUSD', 'EUR/GBP': 'frxEURGBP', 'EUR/JPY': 'frxEURJPY'}
+    selected_pair_name = st.selectbox('اختر زوج العملات:', options=list(symbol_map.keys()))
     selected_symbol = symbol_map[selected_pair_name]
 
 with col2:
-    timeframe_map = {
-        '1 دقيقة': 60,
-        '5 دقائق': 300,
-        '15 دقيقة': 900
-    }
-    selected_timeframe_name = st.selectbox(
-        'اختر الفريم الزمني:',
-        options=list(timeframe_map.keys())
+    selected_trade_duration = st.selectbox(
+        'مدة الصفقة المطلوبة:',
+        options=['15 دقيقة']
     )
-    selected_timeframe = timeframe_map[selected_timeframe_name]
 
 if st.button('احصل على الإشارة الآن'):
-    with st.spinner('جاري جلب التيكات وتحويلها إلى شموع... يرجى الانتظار'):
-        ticks_data = fetch_data_from_websocket(selected_symbol)
-        
-        if not ticks_data.empty:
-            st.info("تم جلب التيكات بنجاح. جاري تحويلها وتحليلها...")
-            
-            candles_data = ticks_to_ohlc(ticks_data, selected_timeframe)
-            
-            if not candles_data.empty:
-                results = analyse_data(candles_data)
-                
-                if results:
-                    st.markdown("---")
-                    st.header("نتائج التحليل والإشارة:")
-                    st.success("🎉 تم التحليل بنجاح! إليك الإشارة:")
-                    
-                    st.markdown(f"## **الإشارة**: {results['final_decision']}")
-                    st.markdown(f"## **قوتها**: {results['total_strength']}%")
-                    
-                    st.markdown("---")
-                    st.info("💡 ملاحظة: التحليل يعتمد على بيانات السوق اللحظية. يرجى استخدامه كأداة مساعدة في اتخاذ القرار.")
-            else:
-                st.error("فشل في تحويل التيكات إلى شموع. يرجى المحاولة مرة أخرى.")
+    with st.spinner('جاري تحليل الاتجاه العام (فريم 15 دقيقة)...'):
+        ticks_15min = fetch_data_from_websocket(selected_symbol, count=20000)
+        if ticks_15min.empty:
+            st.error("فشل في جلب بيانات فريم 15 دقيقة. يرجى المحاولة لاحقًا.")
         else:
-            st.error("فشل جلب التيكات. يرجى التحقق من اتصالك بالإنترنت والمحاولة لاحقًا.")
+            candles_15min = ticks_to_ohlc(ticks_15min, 900)
+            trend, error = analyse_data(candles_15min, '15 دقيقة')
+            
+            if trend and trend != "⚠️ متعادل":
+                st.info(f"الاتجاه العام للسوق على فريم 15 دقيقة هو: **{trend}**.")
+                st.markdown("---")
+                with st.spinner('جاري البحث عن إشارة دخول على فريم 1 دقيقة...'):
+                    ticks_1min = fetch_data_from_websocket(selected_symbol, count=5000)
+                    if ticks_1min.empty:
+                        st.error("فشل في جلب بيانات فريم 1 دقيقة.")
+                    else:
+                        candles_1min = ticks_to_ohlc(ticks_1min, 60)
+                        entry_signal, error = analyse_data(candles_1min, '1 دقيقة')
+                        
+                        st.markdown("---")
+                        st.header("نتائج التحليل والإشارة:")
+
+                        if error:
+                            st.error(error)
+                        elif entry_signal == trend and entry_signal != "⚠️ متعادل":
+                            st.success(f"🎉 تم تأكيد الإشارة! الإشارة الأقوى هي: **{entry_signal}**.")
+                            st.info(f"💡 هذه الإشارة موثوقة لأنها تتماشى مع الاتجاه العام على فريم 15 دقيقة.")
+                        else:
+                            st.warning("⚠️ لا توجد إشارة قوية حاليًا.")
+                            st.info(f"التحليل على فريم 1 دقيقة أعطى إشارة **{entry_signal}**، لكنها لا تتوافق مع الاتجاه العام **{trend}**.")
+            else:
+                st.warning("⚠️ لا يمكن تحديد اتجاه واضح على فريم 15 دقيقة. السوق في حالة تذبذب أو لا يوجد بيانات كافية.")
+                st.info("لا يمكن إعطاء إشارة قوية في هذه الحالة.")
