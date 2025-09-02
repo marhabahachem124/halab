@@ -40,7 +40,7 @@ def find_support_resistance(data):
     return support, resistance
 
 # دالة لتحليل أنماط الشموع
-def analyze_candlesticks(data):
+def analyze_candlesticks(data, timeframe_name):
     score = 0
     
     if len(data) >= 2:
@@ -51,13 +51,13 @@ def analyze_candlesticks(data):
         if (last['Close'] > last['Open'] and prev['Close'] < prev['Open'] and
             last['High'] > prev['High'] and last['Low'] < prev['Low']):
             score += 30
-            st.info("💡 تم رصد نمط شمعة **ابتلاعية صعودية** قوية.")
+            st.info(f"💡 على فريم {timeframe_name}: تم رصد نمط شمعة **ابتلاعية صعودية** قوية.")
         
         # Bearish Engulfing
         if (last['Close'] < last['Open'] and prev['Close'] > prev['Open'] and
             last['High'] > prev['High'] and last['Low'] < prev['Low']):
             score -= 30
-            st.info("💡 تم رصد نمط شمعة **ابتلاعية هبوطية** قوية.")
+            st.info(f"💡 على فريم {timeframe_name}: تم رصد نمط شمعة **ابتلاعية هبوطية** قوية.")
 
         # Hammer & Shooting Star
         body = abs(last['Close'] - last['Open'])
@@ -66,11 +66,11 @@ def analyze_candlesticks(data):
         
         if last['Close'] > last['Open'] and lower_shadow > body * 2 and upper_shadow < body:
             score += 20
-            st.info("💡 تم رصد نمط شمعة **مطرقة** قوية.")
+            st.info(f"💡 على فريم {timeframe_name}: تم رصد نمط شمعة **مطرقة** قوية.")
         
         if last['Close'] < last['Open'] and upper_shadow > body * 2 and lower_shadow < body:
             score -= 20
-            st.info("💡 تم رصد نمط شمعة **نجم الرماية** قوية.")
+            st.info(f"💡 على فريم {timeframe_name}: تم رصد نمط شمعة **نجم الرماية** قوية.")
             
     return score
 
@@ -104,9 +104,9 @@ def analyse_data(data, timeframe_name):
         last_candle_is_up = last_close > data.iloc[-1]['Open']
         
         # 1. تحليل أنماط الشموع (وزن عالي جداً)
-        candlestick_score = analyze_candlesticks(data)
+        candlestick_score = analyze_candlesticks(data, timeframe_name)
         score += candlestick_score
-        
+
         # 2. تحليل مناطق الدعم والمقاومة (وزن عالي)
         support, resistance = find_support_resistance(data)
         if last_close > resistance * 1.0001: score += 40
@@ -140,9 +140,29 @@ def analyse_data(data, timeframe_name):
         if data.iloc[-1]['Close'] > data['SAR'].iloc[-1]: score += 15
         elif data.iloc[-1]['Close'] < data['SAR'].iloc[-1]: score -= 15
         
+        # 5. تحليل الشمعة الـ 5 دقائق (خاص بفريم 1 دقيقة)
+        if timeframe_name == '1 دقيقة' and len(data) >= 5:
+            last_5_candles = data.tail(5)
+            # بناء شمعة اصطناعية من آخر 5 شموع
+            synthetic_open = last_5_candles.iloc[0]['Open']
+            synthetic_high = last_5_candles['High'].max()
+            synthetic_low = last_5_candles['Low'].min()
+            synthetic_close = last_5_candles.iloc[-1]['Close']
+
+            # التحقق من أنماط الشمعة الاصطناعية
+            if synthetic_close > synthetic_open and (synthetic_high - synthetic_low) > 0.0005:
+                st.info("💡 آخر 5 شموع تشكل شمعة **صعودية قوية**.")
+                score += 30
+            elif synthetic_close < synthetic_open and (synthetic_high - synthetic_low) > 0.0005:
+                st.info("💡 آخر 5 شموع تشكل شمعة **هبوطية قوية**.")
+                score -= 30
+
         final_decision = "⚠️ متعادل"
-        if score > 30: final_decision = "📈 صعود"
-        elif score < -30: final_decision = "📉 هبوط"
+        
+        if score > 50: final_decision = "📈 صعود قوي"
+        elif score > 20: final_decision = "📈 صعود"
+        elif score < -50: final_decision = "📉 هبوط قوي"
+        elif score < -20: final_decision = "📉 هبوط"
         
         return final_decision, None
         
@@ -197,20 +217,20 @@ with col1:
 with col2:
     selected_trade_duration = st.selectbox(
         'مدة الصفقة المطلوبة:',
-        options=['5 دقائق']
+        options=['15 دقيقة']
     )
 
 if st.button('احصل على الإشارة الآن'):
-    with st.spinner('جاري تحليل الاتجاه العام (فريم 5 دقائق)...'):
-        ticks_5min = fetch_data_from_websocket(selected_symbol, count=20000)
-        if ticks_5min.empty:
-            st.error("فشل في جلب بيانات فريم 5 دقائق. يرجى المحاولة لاحقًا.")
+    with st.spinner('جاري تحليل الاتجاه العام (فريم 15 دقيقة)...'):
+        ticks_15min = fetch_data_from_websocket(selected_symbol, count=20000)
+        if ticks_15min.empty:
+            st.error("فشل في جلب بيانات فريم 15 دقيقة. يرجى المحاولة لاحقًا.")
         else:
-            candles_5min = ticks_to_ohlc(ticks_5min, 300)
-            trend, error = analyse_data(candles_5min, '5 دقائق')
+            candles_15min = ticks_to_ohlc(ticks_15min, 900)
+            trend, error = analyse_data(candles_15min, '15 دقيقة') 
             
-            if trend and trend != "⚠️ متعادل":
-                st.info(f"الاتجاه العام للسوق على فريم 5 دقائق هو: **{trend}**.")
+            if trend and "قوي" in trend:
+                st.info(f"الاتجاه العام للسوق على فريم 15 دقيقة هو: **{trend}**.")
                 st.markdown("---")
                 with st.spinner('جاري البحث عن إشارة دخول على فريم 1 دقيقة...'):
                     ticks_1min = fetch_data_from_websocket(selected_symbol, count=5000)
@@ -218,19 +238,19 @@ if st.button('احصل على الإشارة الآن'):
                         st.error("فشل في جلب بيانات فريم 1 دقيقة.")
                     else:
                         candles_1min = ticks_to_ohlc(ticks_1min, 60)
-                        entry_signal, error = analyse_data(candles_1min, '1 دقيقة')
+                        entry_signal, error = analyse_data(candles_1min, '1 دقيقة') 
                         
                         st.markdown("---")
                         st.header("نتائج التحليل والإشارة:")
 
                         if error:
                             st.error(error)
-                        elif entry_signal == trend and entry_signal != "⚠️ متعادل":
+                        elif ("صعود" in trend and "صعود" in entry_signal) or ("هبوط" in trend and "هبوط" in entry_signal):
                             st.success(f"🎉 تم تأكيد الإشارة! الإشارة الأقوى هي: **{entry_signal}**.")
-                            st.info(f"💡 هذه الإشارة موثوقة لأنها تتماشى مع الاتجاه العام على فريم 5 دقائق.")
+                            st.info(f"💡 هذه الإشارة موثوقة لأنها تتماشى مع الاتجاه العام على فريم 15 دقيقة.")
                         else:
                             st.warning("⚠️ لا توجد إشارة قوية حاليًا.")
                             st.info(f"التحليل على فريم 1 دقيقة أعطى إشارة **{entry_signal}**، لكنها لا تتوافق مع الاتجاه العام **{trend}**.")
             else:
-                st.warning("⚠️ لا يمكن تحديد اتجاه واضح على فريم 5 دقائق. السوق في حالة تذبذب أو لا يوجد بيانات كافية.")
+                st.warning("⚠️ لا يمكن تحديد اتجاه واضح وقوي على فريم 15 دقيقة. السوق في حالة تذبذب أو لا يوجد بيانات كافية.")
                 st.info("لا يمكن إعطاء إشارة قوية في هذه الحالة.")
