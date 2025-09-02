@@ -112,26 +112,12 @@ def analyse_data(data):
         if data['ROC'].iloc[-1] > 0: score += 10
         elif data['ROC'].iloc[-1] < 0: score -= 10
         
-        # --- التحقق النهائي: المؤشرات + حركة آخر 5 دقائق ---
-        provisional_decision = "⚠️ متعادل"
-        if score > 40: provisional_decision = "📈 صعود"
-        elif score < -40: provisional_decision = "📉 هبوط"
+        # --- القرار النهائي (يعتمد على النقاط فقط) ---
+        final_decision = "⚠️ متعادل"
+        if score > 40: final_decision = "📈 صعود"
+        elif score < -40: final_decision = "📉 هبوط"
 
-        if len(data) >= 5:
-            last_5_candles = data.tail(5)
-            synthetic_open = last_5_candles.iloc[0]['Open']
-            synthetic_close = last_5_candles.iloc[-1]['Close']
-            
-            # شرط التأكيد: يجب أن تكون الشمعة الاصطناعية في نفس اتجاه الإشارة
-            if (provisional_decision == "📈 صعود" and synthetic_close > synthetic_open):
-                return "📈 صعود", None
-            elif (provisional_decision == "📉 هبوط" and synthetic_close < synthetic_open):
-                return "📉 هبوط", None
-            else:
-                st.warning("⚠️ المؤشرات السريعة تعطي إشارة، لكن حركة آخر 5 دقائق لا تؤكدها.")
-                return "⚠️ متعادل", None
-        else:
-            return provisional_decision, None
+        return final_decision, None
         
     except Exception as e:
         return None, f"حدث خطأ في التحليل: {e}"
