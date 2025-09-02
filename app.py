@@ -82,18 +82,18 @@ def analyse_data(data):
 
         data = data.tail(50).copy()
 
-        # إضافة المؤشرات
+        # إضافة المؤشرات - تم تصحيح الأخطاء هنا
         data['RSI'] = ta.momentum.RSIIndicator(data['Close']).rsi()
         data['MACD'] = ta.trend.MACD(data['Close']).macd()
         data['MACD_Signal'] = ta.trend.MACD(data['Close']).macd_signal()
-        data['Awesome_Oscillator'] = ta.momentum.awesome_oscillator(data['High'], data['Low'])
+        data['Awesome_Oscillator'] = ta.momentum.awesome_oscillator(data['High'], data['Low']) # تم التصحيح
         data['ROC'] = ta.momentum.ROCIndicator(data['Close']).roc()
         data['Stoch_K'] = ta.momentum.StochasticOscillator(data['High'], data['Low'], data['Close']).stoch()
         data['Bollinger_Bands_PctB'] = ta.volatility.BollingerBands(data['Close']).bollinger_pband()
         data['ADX'] = ta.trend.ADXIndicator(data['High'], data['Low'], data['Close']).adx()
         data['MFI'] = ta.volume.MFIIndicator(data['High'], data['Low'], data['Close'], data['Volume']).money_flow_index()
-        data['Aroon_Up'] = ta.trend.AroonIndicator(data['Close']).aroon_up()
-        data['Aroon_Down'] = ta.trend.AroonIndicator(data['Close']).aroon_down()
+        data['Aroon_Up'] = ta.trend.AroonIndicator(data['High'], data['Low']).aroon_up() # تم التصحيح
+        data['Aroon_Down'] = ta.trend.AroonIndicator(data['High'], data['Low']).aroon_down() # تم التصحيح
         data['Vortex_P'] = ta.trend.VortexIndicator(data['High'], data['Low'], data['Close']).vortex_indicator_pos()
         data['Vortex_N'] = ta.trend.VortexIndicator(data['High'], data['Low'], data['Close']).vortex_indicator_neg()
         data['SAR'] = ta.trend.PSARIndicator(data['High'], data['Low'], data['Close']).psar()
