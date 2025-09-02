@@ -87,7 +87,7 @@ def analyse_data(data):
         data['Stoch_K'] = ta.momentum.StochasticOscillator(data['High'], data['Low'], data['Close']).stoch()
         data['ROC'] = ta.momentum.ROCIndicator(data['Close']).roc()
         
-        # --- نظام النقاط الجديد (يعتمد على المؤشرات السريعة) ---
+        # --- نظام النقاط (يعتمد على المؤشرات السريعة) ---
         score = 0
         
         # 1. تحليل أنماط الشموع (وزن عالي جداً)
@@ -112,12 +112,36 @@ def analyse_data(data):
         if data['ROC'].iloc[-1] > 0: score += 10
         elif data['ROC'].iloc[-1] < 0: score -= 10
         
-        # --- القرار النهائي (يعتمد على النقاط فقط) ---
-        final_decision = "⚠️ متعادل"
-        if score > 40: final_decision = "📈 صعود"
-        elif score < -40: final_decision = "📉 هبوط"
+        # --- القرار الأساسي (المؤشرات فقط) ---
+        provisional_decision = ""
+        if score > 0:
+            provisional_decision = "📈 صعود"
+        elif score < 0:
+            provisional_decision = "📉 هبوط"
+        else: # في حالة نادرة جداً
+            provisional_decision = "⚠️ متعادل"
 
-        return final_decision, None
+        # --- شرط التأكيد الإجباري (حركة آخر دقيقة) ---
+        if len(data) >= 1:
+            last_candle = data.iloc[-1]
+            last_candle_is_up = last_candle['Close'] > last_candle['Open']
+            
+            if (provisional_decision == "📈 صعود" and last_candle_is_up):
+                return "📈 صعود", None
+            elif (provisional_decision == "📉 هبوط" and not last_candle_is_up):
+                return "📉 هبوط", None
+            else:
+                # إذا لم يتم التأكيد، يعطي البوت إشارة معاكسة أو "متعادل" لتجنب الخطأ
+                if provisional_decision == "📈 صعود":
+                    st.warning("⚠️ المؤشرات تعطي صعود، لكن حركة آخر دقيقة لا تؤكدها.")
+                    return "📉 هبوط", None
+                elif provisional_decision == "📉 هبوط":
+                    st.warning("⚠️ المؤشرات تعطي هبوط، لكن حركة آخر دقيقة لا تؤكدها.")
+                    return "📈 صعود", None
+                else:
+                    return "⚠️ متعادل", None
+        else:
+            return provisional_decision, None
         
     except Exception as e:
         return None, f"حدث خطأ في التحليل: {e}"
