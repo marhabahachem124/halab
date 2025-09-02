@@ -1,7 +1,7 @@
 import streamlit as st
-import yfinance as yf
+import websocket
+import json
 import pandas as pd
-import numpy as np
 import ta
 import time
 
@@ -12,13 +12,10 @@ st.set_page_config(
 )
 
 # دالة تحليل البيانات
-def analyse_data(symbol, timeframe):
+def analyse_data(data):
     try:
-        data = yf.download(symbol, period='5d', interval=timeframe) 
-        
         if data.empty or len(data) < 30:
-            st.error("خطأ: لا توجد بيانات كافية لرمز الزوج المحدد.")
-            return None
+            return {'final_decision': "⚠️ لا توجد بيانات كافية", 'total_strength': 0}
 
         data = data.tail(30)
 
@@ -125,7 +122,6 @@ def analyse_data(symbol, timeframe):
         
         last_candle_is_up = data.iloc[-1]['Close'] > data.iloc[-1]['Open']
 
-        # دائماً يعطي إشارة وتكون نفس آخر شمعة
         if (final_decision == "📈 صعود" and not last_candle_is_up):
             final_decision = "📉 هبوط"
             total_strength = min(100, 50 + abs(score))
@@ -147,8 +143,42 @@ def analyse_data(symbol, timeframe):
         }
 
     except Exception as e:
-        st.error(f"حدث خطأ: {e}")
+        st.error(f"حدث خطأ في التحليل: {e}")
         return None
+
+# --- منطق الاتصال بـ WebSocket ---
+
+def fetch_data_from_websocket(symbol, timeframe):
+    
+    ws = websocket.create_connection("wss://blue.derivws.com/websockets/v3?app_id=16929")
+    
+    # طلب البيانات التاريخية
+    request = {
+        "ticks_history": symbol,
+        "end": "latest",
+        "count": 31,
+        "style": "candles",
+        "granularity": timeframe
+    }
+    ws.send(json.dumps(request))
+    
+    response = json.loads(ws.recv())
+    
+    ws.close()
+    
+    if 'history' in response:
+        candles = response['history']
+        df = pd.DataFrame(candles)
+        df['Open'] = pd.to_numeric(df['open'])
+        df['High'] = pd.to_numeric(df['high'])
+        df['Low'] = pd.to_numeric(df['low'])
+        df['Close'] = pd.to_numeric(df['close'])
+        df['Volume'] = pd.to_numeric(df.get('volume', 0))
+        return df
+    else:
+        st.error("فشل في جلب البيانات من Deriv.")
+        return pd.DataFrame()
+
 
 # --- تصميم الواجهة باستخدام Streamlit ---
 
@@ -161,9 +191,9 @@ col1, col2 = st.columns(2)
 
 with col1:
     symbol_map = {
-        'EUR/USD': 'EURUSD=X',
-        'EUR/GBP': 'EURGBP=X',
-        'EUR/JPY': 'EURJPY=X'
+        'EUR/USD': 'frxEURUSD',
+        'EUR/GBP': 'frxEURGBP',
+        'EUR/JPY': 'frxEURJPY'
     }
     selected_pair_name = st.selectbox(
         'اختر زوج العملات:',
@@ -173,8 +203,8 @@ with col1:
 
 with col2:
     timeframe_map = {
-        '1 دقيقة': '1m',
-        '5 دقائق': '5m'
+        '1 دقيقة': 60,
+        '5 دقائق': 300
     }
     selected_timeframe_name = st.selectbox(
         'اختر الفريم الزمني:',
@@ -184,10 +214,13 @@ with col2:
 
 if st.button('احصل على الإشارة الآن'):
     with st.spinner('جاري التحليل... يرجى الانتظار'):
-        time.sleep(1) 
-        results = analyse_data(selected_symbol, selected_timeframe)
+        st.info("جاري الاتصال بـ Deriv لجلب البيانات.")
+        data = fetch_data_from_websocket(selected_symbol, selected_timeframe)
         
-        if results:
+        if not data.empty:
+            st.info("تم جلب البيانات بنجاح. جاري التحليل...")
+            results = analyse_data(data)
+            
             st.markdown("---")
             st.header("نتائج التحليل والإشارة:")
             st.success("🎉 تم التحليل بنجاح! إليك الإشارة:")
@@ -197,3 +230,5 @@ if st.button('احصل على الإشارة الآن'):
             
             st.markdown("---")
             st.info("💡 ملاحظة: التحليل يعتمد على بيانات السوق اللحظية. يرجى استخدامه كأداة مساعدة في اتخاذ القرار.")
+        else:
+            st.error("فشل التحليل بسبب عدم توفر البيانات.")
