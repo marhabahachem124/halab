@@ -1,5 +1,5 @@
 streamlit
-yfinance
+websocket-client
 pandas
 numpy
 ta
