@@ -82,26 +82,13 @@ def analyse_data(data):
 
         data = data.tail(50).copy()
 
-        # إضافة المؤشرات - تم تصحيح الأخطاء هنا
+        # إضافة المؤشرات السريعة فقط
         data['RSI'] = ta.momentum.RSIIndicator(data['Close']).rsi()
-        data['MACD'] = ta.trend.MACD(data['Close']).macd()
-        data['MACD_Signal'] = ta.trend.MACD(data['Close']).macd_signal()
-        data['Awesome_Oscillator'] = ta.momentum.awesome_oscillator(data['High'], data['Low']) # تم التصحيح
-        data['ROC'] = ta.momentum.ROCIndicator(data['Close']).roc()
         data['Stoch_K'] = ta.momentum.StochasticOscillator(data['High'], data['Low'], data['Close']).stoch()
-        data['Bollinger_Bands_PctB'] = ta.volatility.BollingerBands(data['Close']).bollinger_pband()
-        data['ADX'] = ta.trend.ADXIndicator(data['High'], data['Low'], data['Close']).adx()
-        data['MFI'] = ta.volume.MFIIndicator(data['High'], data['Low'], data['Close'], data['Volume']).money_flow_index()
-        data['Aroon_Up'] = ta.trend.AroonIndicator(data['High'], data['Low']).aroon_up() # تم التصحيح
-        data['Aroon_Down'] = ta.trend.AroonIndicator(data['High'], data['Low']).aroon_down() # تم التصحيح
-        data['Vortex_P'] = ta.trend.VortexIndicator(data['High'], data['Low'], data['Close']).vortex_indicator_pos()
-        data['Vortex_N'] = ta.trend.VortexIndicator(data['High'], data['Low'], data['Close']).vortex_indicator_neg()
-        data['SAR'] = ta.trend.PSARIndicator(data['High'], data['Low'], data['Close']).psar()
+        data['ROC'] = ta.momentum.ROCIndicator(data['Close']).roc()
         
-        # --- نظام النقاط الشامل والمتقدم ---
+        # --- نظام النقاط الجديد (يعتمد على المؤشرات السريعة) ---
         score = 0
-        last_close = data.iloc[-1]['Close']
-        last_candle_is_up = last_close > data.iloc[-1]['Open']
         
         # 1. تحليل أنماط الشموع (وزن عالي جداً)
         candlestick_score = analyze_candlesticks(data)
@@ -109,38 +96,23 @@ def analyse_data(data):
         
         # 2. تحليل مناطق الدعم والمقاومة (وزن عالي)
         support, resistance = find_support_resistance(data)
+        last_close = data.iloc[-1]['Close']
         if last_close > resistance * 1.0001: score += 40
         elif last_close < support * 0.9999: score -= 40
         if last_close < resistance and last_close > resistance * 0.9999: score -= 25
         if last_close > support and last_close < support * 1.0001: score += 25
         
-        # 3. تحليل الزخم والمؤشرات (وزن متوسط)
-        if data['MACD'].iloc[-1] > data['MACD_Signal'].iloc[-1]: score += 15
-        elif data['MACD'].iloc[-1] < data['MACD_Signal'].iloc[-1]: score -= 15
+        # 3. تحليل المؤشرات السريعة (وزن متوسط)
+        if data['RSI'].iloc[-1] > 70: score -= 20
+        elif data['RSI'].iloc[-1] < 30: score += 20
         
-        if data['Awesome_Oscillator'].iloc[-1] > 0: score += 10
-        elif data['Awesome_Oscillator'].iloc[-1] < 0: score -= 10
-        
+        if data['Stoch_K'].iloc[-1] > 80: score -= 20
+        elif data['Stoch_K'].iloc[-1] < 20: score += 20
+
         if data['ROC'].iloc[-1] > 0: score += 10
         elif data['ROC'].iloc[-1] < 0: score -= 10
         
-        # 4. المؤشرات الأخرى (وزن أقل)
-        if data['RSI'].iloc[-1] > 70: score -= 10
-        elif data['RSI'].iloc[-1] < 30: score += 10
-        
-        if data['Stoch_K'].iloc[-1] > 80: score -= 10
-        elif data['Stoch_K'].iloc[-1] < 20: score += 10
-        
-        if data['Aroon_Up'].iloc[-1] > data['Aroon_Down'].iloc[-1] and data['Aroon_Up'].iloc[-1] > 50: score += 10
-        elif data['Aroon_Down'].iloc[-1] > data['Aroon_Up'].iloc[-1] and data['Aroon_Down'].iloc[-1] > 50: score -= 10
-        
-        if data['Vortex_P'].iloc[-1] > data['Vortex_N'].iloc[-1]: score += 10
-        elif data['Vortex_P'].iloc[-1] < data['Vortex_N'].iloc[-1]: score -= 10
-        
-        if data.iloc[-1]['Close'] > data['SAR'].iloc[-1]: score += 15
-        elif data.iloc[-1]['Close'] < data['SAR'].iloc[-1]: score -= 15
-        
-        # --- التحقق النهائي من الإشارة مع شمعة الـ 5 دقائق الاصطناعية ---
+        # --- التحقق النهائي: المؤشرات + حركة آخر 5 دقائق ---
         provisional_decision = "⚠️ متعادل"
         if score > 40: provisional_decision = "📈 صعود"
         elif score < -40: provisional_decision = "📉 هبوط"
@@ -156,7 +128,7 @@ def analyse_data(data):
             elif (provisional_decision == "📉 هبوط" and synthetic_close < synthetic_open):
                 return "📉 هبوط", None
             else:
-                st.warning("⚠️ المؤشرات تعطي إشارة، لكن حركة آخر 5 دقائق لا تؤكدها.")
+                st.warning("⚠️ المؤشرات السريعة تعطي إشارة، لكن حركة آخر 5 دقائق لا تؤكدها.")
                 return "⚠️ متعادل", None
         else:
             return provisional_decision, None
