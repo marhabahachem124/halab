@@ -496,59 +496,59 @@ else:
                                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ لم يتم العثور على إشارة قوية. لم يتم وضع أي صفقة.")
 
 
-                    except Exception as e:
-                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ حدث خطأ أثناء دورة التداول: {e}")
-                    finally:
-                        if ws:
-                            ws.close()
-                    
-                    st.rerun()
-
-        # --- عرض الصفحات بناءً على الحالة ---
-        if st.session_state.page == 'inputs':
-            st.header("1. إعدادات البوت")
-            
-            # حقل إدخال رمز API
-            st.session_state.user_token = st.text_input("أدخل رمز Deriv API الخاص بك:", type="password", key="api_token_input")
-            
-            st.session_state.base_amount = st.number_input("المبلغ الأساسي", min_value=0.5, step=0.5, value=st.session_state.base_amount)
-            st.session_state.tp_target = st.number_input("الهدف (Take Profit)", min_value=1.0, step=1.0, value=st.session_state.tp_target)
-            
-            start_button = st.button("بدء البوت")
-            stop_button = st.button("إيقاف البوت")
-
-            if start_button:
-                if not st.session_state.user_token:
-                    st.error("يرجى إدخال رمز API صالح قبل بدء البوت.")
-                else:
-                    st.session_state.bot_running = True
-                    st.session_state.current_amount = st.session_state.base_amount
-                    st.session_state.consecutive_losses = 0
-                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 تم تشغيل البوت.")
-                    st.rerun()
-            
-            if stop_button:
-                st.session_state.bot_running = False
-                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 تم إيقاف البوت من قبل المستخدم.")
-                st.rerun()
+                except Exception as e:
+                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ حدث خطأ أثناء دورة التداول: {e}")
+                finally:
+                    if ws:
+                        ws.close()
                 
-        elif st.session_state.page == 'logs':
-            st.header("2. سجلات البوت المباشرة")
-            with st.container(height=600):
-                st.text_area("السجلات", "\n".join(st.session_state.log_records), height=600)
+                st.rerun()
 
-        # --- تذييل مع أزرار التنقل ---
-        st.markdown("---")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("الإعدادات"):
-                st.session_state.page = 'inputs'
+    # --- عرض الصفحات بناءً على الحالة ---
+    if st.session_state.page == 'inputs':
+        st.header("1. إعدادات البوت")
+        
+        # حقل إدخال رمز API
+        st.session_state.user_token = st.text_input("أدخل رمز Deriv API الخاص بك:", type="password", key="api_token_input")
+        
+        st.session_state.base_amount = st.number_input("المبلغ الأساسي", min_value=0.5, step=0.5, value=st.session_state.base_amount)
+        st.session_state.tp_target = st.number_input("الهدف (Take Profit)", min_value=1.0, step=1.0, value=st.session_state.tp_target)
+        
+        start_button = st.button("بدء البوت")
+        stop_button = st.button("إيقاف البوت")
+
+        if start_button:
+            if not st.session_state.user_token:
+                st.error("يرجى إدخال رمز API صالح قبل بدء البوت.")
+            else:
+                st.session_state.bot_running = True
+                st.session_state.current_amount = st.session_state.base_amount
+                st.session_state.consecutive_losses = 0
+                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 تم تشغيل البوت.")
                 st.rerun()
-        with col2:
-            if st.button("السجلات"):
-                st.session_state.page = 'logs'
-                st.rerun()
-                
-        # إعادة تشغيل السكريبت بشكل دوري للتحقق من الوقت وتفعيل الدورة التالية
-        time.sleep(1)
-        st.rerun()
+        
+        if stop_button:
+            st.session_state.bot_running = False
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 تم إيقاف البوت من قبل المستخدم.")
+            st.rerun()
+            
+    elif st.session_state.page == 'logs':
+        st.header("2. سجلات البوت المباشرة")
+        with st.container(height=600):
+            st.text_area("السجلات", "\n".join(st.session_state.log_records), height=600)
+
+    # --- تذييل مع أزرار التنقل ---
+    st.markdown("---")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("الإعدادات"):
+            st.session_state.page = 'inputs'
+            st.rerun()
+    with col2:
+        if st.button("السجلات"):
+            st.session_state.page = 'logs'
+            st.rerun()
+            
+    # إعادة تشغيل السكريبت بشكل دوري للتحقق من الوقت وتفعيل الدورة التالية
+    time.sleep(1)
+    st.rerun()
