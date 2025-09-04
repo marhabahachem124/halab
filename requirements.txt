@@ -1,5 +1,8 @@
 streamlit
 websocket-client
 pandas
-numpy
 ta
+numpy
+requests
+SQLAlchemy
+psycopg2-binary
