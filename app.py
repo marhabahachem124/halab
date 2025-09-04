@@ -9,8 +9,7 @@ import requests
 from datetime import datetime
 import os
 from sqlalchemy import create_engine, Column, Integer, String, Boolean
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, declarative_base
 import collections
 
 # --- Database Setup ---
@@ -58,8 +57,21 @@ if 'user_token_exists' not in st.session_state:
 if 'tick_history' not in st.session_state:
     st.session_state.tick_history = collections.deque(maxlen=200)
 
+# --- User IDs from file ---
+allowed_ids = set()
+try:
+    with open('user_ids.txt', 'r') as f:
+        allowed_ids = {line.strip() for line in f}
+except FileNotFoundError:
+    st.error("Error: 'user_ids.txt' not found. Please create the file with a list of allowed User IDs.")
+    st.stop()
+
 # --- User Authentication and Data Management ---
 def login(user_id):
+    if user_id not in allowed_ids:
+        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Login failed: User ID not on the allowed list.")
+        return False
+        
     db = next(get_db())
     try:
         user = db.query(User).filter(User.user_id == user_id).first()
@@ -76,8 +88,12 @@ def login(user_id):
             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Login successful for User ID: {user_id}")
             return True
         else:
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Login failed: User ID not found.")
-            return False
+            # First-time login for an allowed ID, will be created below
+            st.session_state.is_authenticated = True
+            st.session_state.user_id = user_id
+            st.session_state.user_token_exists = False
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Login successful. First-time token setup required.")
+            return True
     finally:
         db.close()
 
@@ -91,7 +107,14 @@ def save_api_token(user_id, token):
             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ API Token saved for User ID: {user_id}")
             st.session_state.user_token_exists = True
             return True
-        return False
+        else:
+            # Create a new user record for an allowed ID
+            new_user = User(user_id=user_id, api_token=token)
+            db.add(new_user)
+            db.commit()
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ New User ID and API Token saved.")
+            st.session_state.user_token_exists = True
+            return True
     except Exception as e:
         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Failed to save API Token: {e}")
         db.rollback()
@@ -309,7 +332,7 @@ if not st.session_state.is_authenticated:
                 st.error("Login failed. Please check your User ID.")
 elif not st.session_state.user_token_exists:
     st.header("1. First-time Configuration")
-    st.info("Please enter your Deriv API Token to link it to your account permanently.")
+    st.info(f"Please enter your Deriv API Token to link it to your account permanently.")
     with st.form("first_time_config_form"):
         api_token_input = st.text_input("Deriv API Token:", type="password")
         config_button = st.form_submit_button("Save and Continue")
