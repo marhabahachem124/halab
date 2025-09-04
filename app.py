@@ -523,9 +523,10 @@ else:
                                 elif candle_signal == "Sell" and last_5_signal == "Sell":
                                     final_signal = "Sell"
 
-                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Candle Signal: {candle_signal.upper()}, Last 5 Ticks Signal: {last_5_signal.upper()}")
-                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Final Signal: {final_signal.upper()}")
-                                    
+                                if final_signal:
+                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Candle Signal: {candle_signal}, Last 5 Ticks Signal: {last_5_signal}")
+                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Final Signal: {final_signal.upper()}")
+                                
                                 if final_signal in ['Buy', 'Sell']:
                                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Placing a {final_signal.upper()} order with {st.session_state.current_amount}$")
                                     order_response = place_order(ws, st.session_state.user_token, symbol_input, final_signal, st.session_state.current_amount)
@@ -537,6 +538,8 @@ else:
                                         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Order placed. ID: {st.session_state.contract_id}")
                                     else:
                                         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Order failed: {order_response}")
+                                else:
+                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ No strong signal found. No trade placed.")
                             else:
                                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Insufficient data received for analysis.")
                         else:
