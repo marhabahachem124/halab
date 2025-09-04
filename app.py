@@ -468,7 +468,6 @@ else:
 
     # --- Main Bot Logic (runs once per minute) ---
     if st.session_state.bot_running and not st.session_state.is_trade_open:
-        current_minute = datetime.now().minute
         # Only run if a minute has passed since the last action
         if datetime.now() - st.session_state.last_action_time >= timedelta(minutes=1):
             
@@ -557,5 +556,4 @@ else:
     st.text_area("Logs", "\n".join(st.session_state.log_records), height=400, key=f"logs_{time.time()}")
     
     # Rerun the script periodically to check the time and trigger the next cycle
-    if st.session_state.bot_running:
-        st.experimental_rerun()
+    st.rerun()
