@@ -8,44 +8,28 @@ import numpy as np
 import requests
 from datetime import datetime, timedelta
 import os
-from sqlalchemy import create_engine, Column, Integer, String, Boolean
-from sqlalchemy.orm import sessionmaker, declarative_base
 import collections
+import random
 
-# --- Database Setup ---
-DATABASE_URL = os.environ.get("DATABASE_URL")
-
-if not DATABASE_URL:
-    st.error("DATABASE_URL environment variable is not set.")
-    st.stop()
-
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-class User(Base):
-    __tablename__ = "users"
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(String, unique=True, index=True)
-    api_token = Column(String)
-    is_active = Column(Boolean, default=True)
-
-Base.metadata.create_all(bind=engine)
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+# --- File-based Licensing ---
+# This file contains the User IDs that are allowed to run the bot.
+ALLOWED_USERS_FILE = 'user_ids.txt'
+# This file stores the unique ID for the user's device.
+DEVICE_ID_FILE = 'khourybot_user_id.txt'
 
 # --- Configuration and State Variables ---
 if 'is_authenticated' not in st.session_state:
     st.session_state.is_authenticated = False
 if 'user_id' not in st.session_state:
     st.session_state.user_id = None
-if 'bot_running' not in st.session_state:
+if 'bot_running' in st.session_state and st.session_state.bot_running:
+    if 'current_amount' not in st.session_state:
+        st.session_state.current_amount = st.session_state.base_amount
+    if 'consecutive_losses' not in st.session_state:
+        st.session_state.consecutive_losses = 0
+else:
     st.session_state.bot_running = False
+
 if 'is_trade_open' not in st.session_state:
     st.session_state.is_trade_open = False
 if 'trade_start_time' not in st.session_state:
@@ -56,8 +40,6 @@ if 'log_records' not in st.session_state:
     st.session_state.log_records = []
 if 'user_token' not in st.session_state:
     st.session_state.user_token = None
-if 'user_token_exists' not in st.session_state:
-    st.session_state.user_token_exists = False
 if 'tick_history' not in st.session_state:
     st.session_state.tick_history = collections.deque(maxlen=200)
 if 'current_amount' not in st.session_state:
@@ -79,80 +61,43 @@ if 'page' not in st.session_state:
 if 'is_analysing' not in st.session_state:
     st.session_state.is_analysing = False
 
-# --- User IDs from file ---
-allowed_ids = set()
-try:
-    with open('user_ids.txt', 'r') as f:
-        allowed_ids = {line.strip() for line in f}
-except FileNotFoundError:
-    st.error("Error: 'user_ids.txt' not found. Please create the file with a list of allowed User IDs.")
-    st.stop()
+# --- License Check and User ID Generation ---
+def get_user_id():
+    """
+    Generates or retrieves a unique numerical ID for the user's device.
+    The ID is stored in a visible file to persist across sessions.
+    """
+    if 'user_id_session' not in st.session_state:
+        if os.path.exists(DEVICE_ID_FILE):
+            try:
+                with open(DEVICE_ID_FILE, 'r') as f:
+                    st.session_state.user_id_session = f.read().strip()
+            except Exception as e:
+                st.error(f"Error reading {DEVICE_ID_FILE}: {e}")
+                st.session_state.user_id_session = str(random.randint(1000000000000000, 9999999999999999))
+        else:
+            new_id = str(random.randint(1000000000000000, 9999999999999999))
+            try:
+                with open(DEVICE_ID_FILE, 'w') as f:
+                    f.write(new_id)
+                st.session_state.user_id_session = new_id
+            except Exception as e:
+                st.error(f"Error creating {DEVICE_ID_FILE}: {e}")
+                st.session_state.user_id_session = new_id
+    return st.session_state.user_id_session
 
-# --- User Authentication and Data Management ---
-def login(user_id):
-    if user_id not in allowed_ids:
-        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Login failed: User ID not on the allowed list.")
+def is_user_allowed(user_id):
+    """Checks if the User ID is in the allowed list."""
+    try:
+        with open(ALLOWED_USERS_FILE, 'r') as f:
+            allowed_ids = {line.strip() for line in f}
+            return user_id in allowed_ids
+    except FileNotFoundError:
+        st.error(f"Error: '{ALLOWED_USERS_FILE}' not found. Please create this file with a list of allowed User IDs.")
         return False
-        
-    db = next(get_db())
-    try:
-        user = db.query(User).filter(User.user_id == user_id).first()
-        if user:
-            st.session_state.is_authenticated = True
-            st.session_state.user_id = user.user_id
-            
-            # Reset logs on new login
-            st.session_state.log_records = []
-            
-            if user.api_token:
-                st.session_state.user_token_exists = True
-                st.session_state.user_token = user.api_token
-            else:
-                st.session_state.user_token_exists = False
-                
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Login successful for User ID: {user_id}")
-            return True
-        else:
-            new_user = User(user_id=user_id, api_token=None)
-            db.add(new_user)
-            db.commit()
-            st.session_state.is_authenticated = True
-            st.session_state.user_id = user_id
-            st.session_state.user_token_exists = False
-            
-            # Reset logs on new login
-            st.session_state.log_records = []
-            
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Login successful. First-time token setup required.")
-            return True
-    finally:
-        db.close()
-
-def save_api_token(user_id, token):
-    db = next(get_db())
-    try:
-        user = db.query(User).filter(User.user_id == user_id).first()
-        if user:
-            user.api_token = token
-            db.commit()
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ API Token saved for User ID: {user_id}")
-            st.session_state.user_token_exists = True
-            return True
-        else:
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ User ID not found.")
-            return False
     except Exception as e:
-        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Failed to save API Token: {e}")
-        db.rollback()
+        st.error(f"Error reading '{ALLOWED_USERS_FILE}': {e}")
         return False
-    finally:
-        db.close()
-
-def logout():
-    st.session_state.is_authenticated = False
-    st.session_state.bot_running = False
-    st.session_state.is_trade_open = False
-    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 Session logged out.")
 
 # --- Functions from your code ---
 def ticks_to_ohlc_by_count(ticks_df, tick_count):
@@ -364,32 +309,22 @@ def get_balance(ws):
 # --- Main App Logic and UI ---
 st.title("KHOURYBOT - Autotrading 🤖")
 
+# --- Authentication Section ---
+user_id = get_user_id()
+st.session_state.user_id = user_id
+
 if not st.session_state.is_authenticated:
     st.header("Login to Your Account")
-    with st.form("login_form"):
-        user_id_input = st.text_input("User ID")
-        login_button = st.form_submit_button("Login")
-        
-        if login_button:
-            if login(user_id_input):
-                st.success("Login successful!")
-                st.rerun()
-            else:
-                st.error("Login failed. Please check your User ID.")
-elif not st.session_state.user_token_exists:
-    st.header("1. First-time Configuration")
-    st.info(f"Please enter your Deriv API Token to link it to your account permanently.")
-    with st.form("first_time_config_form"):
-        api_token_input = st.text_input("Deriv API Token:", type="password")
-        config_button = st.form_submit_button("Save and Continue")
-        
-        if config_button:
-            if save_api_token(st.session_state.user_id, api_token_input):
-                st.session_state.user_token = api_token_input
-                st.success("API Token saved successfully! Redirecting...")
-                st.rerun()
-            else:
-                st.error("Failed to save token. Please try again.")
+    if is_user_allowed(user_id):
+        st.session_state.is_authenticated = True
+        st.success("Your device is activated! Redirecting to settings...")
+        st.balloons()
+        st.rerun()
+    else:
+        st.warning("Your device is not yet activated. To activate the bot, please send this User ID to the bot administrator:")
+        st.code(user_id)
+        st.info("After activation, simply refresh this page to continue.")
+
 else:
     # --- Status and Timer Display ---
     status_placeholder = st.empty()
@@ -555,8 +490,9 @@ else:
     # --- Display Pages based on state ---
     if st.session_state.page == 'inputs':
         st.header("1. Bot Settings")
-        st.write(f"Logged in as: **{st.session_state.user_id}**")
-        st.write("Your Deriv API Token has been loaded automatically.")
+        
+        # New API Token input field
+        st.session_state.user_token = st.text_input("Enter your Deriv API Token:", type="password", key="api_token_input")
         
         st.session_state.base_amount = st.number_input("Base Amount", min_value=0.5, step=0.5, value=st.session_state.base_amount)
         st.session_state.tp_target = st.number_input("Take Profit (TP)", min_value=1.0, step=1.0, value=st.session_state.tp_target)
@@ -565,11 +501,14 @@ else:
         stop_button = st.button("Stop Bot")
 
         if start_button:
-            st.session_state.bot_running = True
-            st.session_state.current_amount = st.session_state.base_amount
-            st.session_state.consecutive_losses = 0
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot has started.")
-            st.rerun()
+            if not st.session_state.user_token:
+                st.error("Please enter a valid API Token before starting the bot.")
+            else:
+                st.session_state.bot_running = True
+                st.session_state.current_amount = st.session_state.base_amount
+                st.session_state.consecutive_losses = 0
+                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot has started.")
+                st.rerun()
         
         if stop_button:
             st.session_state.bot_running = False
