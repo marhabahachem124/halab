@@ -99,6 +99,9 @@ def login(user_id):
             st.session_state.is_authenticated = True
             st.session_state.user_id = user.user_id
             
+            # Reset logs on new login
+            st.session_state.log_records = []
+            
             if user.api_token:
                 st.session_state.user_token_exists = True
                 st.session_state.user_token = user.api_token
@@ -114,6 +117,10 @@ def login(user_id):
             st.session_state.is_authenticated = True
             st.session_state.user_id = user_id
             st.session_state.user_token_exists = False
+            
+            # Reset logs on new login
+            st.session_state.log_records = []
+            
             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Login successful. First-time token setup required.")
             return True
     finally:
@@ -376,7 +383,7 @@ else:
     # --- Check for pending trade result ---
     if st.session_state.is_trade_open and st.session_state.trade_start_time:
         if datetime.now() >= st.session_state.trade_start_time + timedelta(seconds=70):
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⏱️ 70 seconds passed. Reconnecting to get result...")
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⏱️ Checking trade result...")
             
             ws = None
             try:
@@ -392,7 +399,6 @@ else:
                     st.session_state.bot_running = False
                     st.session_state.is_trade_open = False
                 else:
-                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Reconnection successful. Checking contract status...")
                     contract_info = check_contract_status(ws, st.session_state.contract_id)
                     
                     if contract_info:
@@ -432,7 +438,6 @@ else:
             finally:
                 if ws:
                     ws.close()
-                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🔌 Connection closed.")
             
             st.session_state.trade_start_time = None
             st.session_state.contract_id = None
@@ -442,7 +447,6 @@ else:
     if st.session_state.bot_running and not st.session_state.is_trade_open:
         if datetime.now() - st.session_state.last_action_time >= timedelta(minutes=1):
             if datetime.now().second >= 55:
-                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Starting analysis and trading cycle...")
                 
                 ws = None
                 try:
@@ -456,8 +460,6 @@ else:
                     if auth_response.get('error'):
                         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Authorization failed: {auth_response['error']['message']}")
                     else:
-                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Connection and authorization successful.")
-                        
                         if st.session_state.initial_balance is None:
                             st.session_state.initial_balance = get_balance(ws)
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Initial Balance: {st.session_state.initial_balance}")
@@ -488,12 +490,10 @@ else:
                                     final_signal = "Buy"
                                 elif candle_signal == "Sell" and last_5_signal == "Sell":
                                     final_signal = "Sell"
-
-                                if final_signal:
-                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Candle Signal: {candle_signal}, Last 5 Ticks Signal: {last_5_signal}")
-                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Final Signal: {final_signal.upper()}")
                                 
                                 if final_signal in ['Buy', 'Sell']:
+                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Candle Signal: {candle_signal}, Last 5 Ticks Signal: {last_5_signal}")
+                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Final Signal: {final_signal.upper()}")
                                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Placing a {final_signal.upper()} order with {st.session_state.current_amount}$")
                                     order_response = place_order(ws, st.session_state.user_token, "R_100", final_signal, st.session_state.current_amount)
                                     
@@ -504,19 +504,12 @@ else:
                                         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Order placed. ID: {st.session_state.contract_id}")
                                     else:
                                         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Order failed: {order_response}")
-                                else:
-                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ No strong signal found. No trade placed.")
-                            else:
-                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Insufficient data received for analysis.")
-                        else:
-                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Failed to get tick history.")
 
                 except Exception as e:
                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error during trading cycle: {e}")
                 finally:
                     if ws:
                         ws.close()
-                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🔌 Connection closed.")
                     
                 st.session_state.last_action_time = datetime.now()
                 st.rerun()
@@ -527,7 +520,6 @@ else:
         st.write(f"Logged in as: **{st.session_state.user_id}**")
         st.write("Your Deriv API Token has been loaded automatically.")
         
-        symbol_input = "R_100"
         st.session_state.base_amount = st.number_input("Base Amount", min_value=0.5, step=0.5, value=st.session_state.base_amount)
         st.session_state.tp_target = st.number_input("Take Profit (TP)", min_value=1.0, step=1.0, value=st.session_state.tp_target)
         
@@ -538,7 +530,7 @@ else:
             st.session_state.bot_running = True
             st.session_state.current_amount = st.session_state.base_amount
             st.session_state.consecutive_losses = 0
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot has started. Waiting for analysis window...")
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot has started.")
             st.rerun()
         
         if stop_button:
