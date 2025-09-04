@@ -169,7 +169,7 @@ def analyze_candlesticks(data):
 def analyse_data(data):
     try:
         if data.empty or len(data) < 50:
-            return None, "Error: Insufficient data for analysis (less than 50 candles)."
+            return None, 0, 0, "Error: Insufficient data for analysis (less than 50 candles)."
         data = data.tail(50).copy()
         signals = []
         data['RSI'] = ta.momentum.RSIIndicator(data['Close']).rsi()
@@ -437,7 +437,6 @@ else:
             st.session_state.trade_start_time = None
             st.session_state.contract_id = None
             st.rerun()
-
     if st.session_state.page == 'inputs':
         st.header("1. Bot Settings")
         st.session_state.user_token = st.text_input("Enter your Deriv API token:", type="password", key="api_token_input")
