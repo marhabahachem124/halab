@@ -6,7 +6,7 @@ import ta
 import time
 import numpy as np
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 from sqlalchemy import create_engine, Column, Integer, String, Boolean
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -48,6 +48,10 @@ if 'bot_running' not in st.session_state:
     st.session_state.bot_running = False
 if 'is_trade_open' not in st.session_state:
     st.session_state.is_trade_open = False
+if 'trade_start_time' not in st.session_state:
+    st.session_state.trade_start_time = None
+if 'contract_id' not in st.session_state:
+    st.session_state.contract_id = None
 if 'log_records' not in st.session_state:
     st.session_state.log_records = []
 if 'user_token' not in st.session_state:
@@ -68,6 +72,8 @@ if 'tp_target' not in st.session_state:
     st.session_state.tp_target = None
 if 'max_consecutive_losses' not in st.session_state:
     st.session_state.max_consecutive_losses = 5
+if 'last_action_time' not in st.session_state:
+    st.session_state.last_action_time = datetime.min
 
 # --- User IDs from file ---
 allowed_ids = set()
@@ -316,11 +322,18 @@ def check_contract_status(ws, contract_id):
     req = {"proposal_open_contract": 1, "contract_id": contract_id, "subscribe": 1}
     ws.send(json.dumps(req))
     while True:
-        response = json.loads(ws.recv())
-        if response['msg_type'] == 'proposal_open_contract':
-            is_sold = response['proposal_open_contract']['is_sold']
-            if is_sold:
-                return response['proposal_open_contract']
+        try:
+            response = json.loads(ws.recv())
+            if response.get('msg_type') == 'proposal_open_contract':
+                is_sold = response['proposal_open_contract']['is_sold']
+                if is_sold:
+                    return response['proposal_open_contract']
+        except websocket.WebSocketTimeoutException:
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Timeout waiting for contract info. Re-checking...")
+            time.sleep(5)
+        except Exception as e:
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error while checking contract status: {e}")
+            return None
 
 def get_balance(ws):
     req = {"balance": 1, "subscribe": 1}
@@ -374,134 +387,175 @@ else:
         st.session_state.bot_running = True
         st.session_state.current_amount = st.session_state.base_amount
         st.session_state.consecutive_losses = 0
+        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot has started. Waiting for analysis window...")
+        st.rerun()
+    
     if stop_button:
         st.session_state.bot_running = False
+        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 Bot stopped by user.")
+        st.rerun()
 
     st.markdown("---")
     st.header("2. Live Logs")
-    log_area = st.empty()
-
-    if st.session_state.bot_running:
+    
+    # Check if a trade is pending to get the result
+    if st.session_state.is_trade_open and st.session_state.trade_start_time:
         
-        def get_deriv_ws_connection(api_token):
+        # Check if 70 seconds have passed since the trade was placed
+        if datetime.now() >= st.session_state.trade_start_time + timedelta(seconds=70):
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⏱️ 70 seconds passed. Reconnecting to get result...")
+            
+            ws = None
             try:
                 ws = websocket.WebSocket()
                 ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929")
-                return ws
-            except Exception as e:
-                st.error(f"Failed to connect to Deriv: {e}")
-                return None
-
-        def authorize_deriv(ws, api_token):
-            req = {"authorize": api_token}
-            ws.send(json.dumps(req))
-            response = json.loads(ws.recv())
-            return response
-
-        ws = get_deriv_ws_connection(st.session_state.user_token)
-        if ws:
-            auth_response = authorize_deriv(ws, st.session_state.user_token)
-            
-            if auth_response.get('error'):
-                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Authorization failed: {auth_response['error']['message']}")
-                 st.session_state.bot_running = False
-                 st.rerun()
-            else:
-                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot Started. Connection to API successful.")
-                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🔑 Authorization status: {auth_response.get('authorize', {}).get('is_virtual', 'N/A')}")
-            
-            if st.session_state.initial_balance is None:
-                st.session_state.initial_balance = get_balance(ws)
-                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Initial Balance: {st.session_state.initial_balance}")
-
-            req = {"ticks_history": symbol_input, "end": "latest", "count": 70, "style": "ticks"}
-            ws.send(json.dumps(req))
-            
-            last_analysis_time = None
-            
-            while st.session_state.bot_running:
-                try:
-                    tick_data = json.loads(ws.recv())
+                
+                auth_req = {"authorize": st.session_state.user_token}
+                ws.send(json.dumps(auth_req))
+                auth_response = json.loads(ws.recv())
+                
+                if auth_response.get('error'):
+                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Reconnection failed. Authorization error.")
+                    st.session_state.bot_running = False
+                    st.session_state.is_trade_open = False
+                else:
+                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Reconnection successful. Checking contract status...")
+                    contract_info = check_contract_status(ws, st.session_state.contract_id)
                     
-                    if 'history' in tick_data:
-                        ticks = tick_data['history']['prices']
-                        timestamps = tick_data['history']['times']
-                        df_ticks = pd.DataFrame({'timestamp': timestamps, 'price': ticks})
+                    if contract_info:
+                        profit = contract_info.get('profit', 0)
+                        is_win = profit > 0
                         
-                        if len(df_ticks) >= 70:
-                            candles_5ticks = ticks_to_ohlc_by_count(df_ticks.tail(70), 5)
-                            last_5_ticks = df_ticks.tail(5)
-
-                            candle_signal, _ = analyse_data(candles_5ticks)
+                        if is_win:
+                            st.session_state.consecutive_losses = 0
+                            st.session_state.current_amount = st.session_state.base_amount
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🎉 WIN! Profit: {profit}")
+                        else:
+                            st.session_state.consecutive_losses += 1
+                            st.session_state.current_amount *= 2.2
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💔 LOSS! Loss: {profit}")
+                        
+                        st.session_state.is_trade_open = False
+                        
+                        current_balance = get_balance(ws)
+                        if current_balance is not None:
+                            if st.session_state.initial_balance is None:
+                                st.session_state.initial_balance = current_balance
                             
-                            last_5_signal = "Neutral"
-                            if last_5_ticks['price'].iloc[-1] > last_5_ticks['price'].iloc[0]:
-                                last_5_signal = "Buy"
-                            elif last_5_ticks['price'].iloc[-1] < last_5_ticks['price'].iloc[0]:
-                                last_5_signal = "Sell"
-
-                            final_signal = "Neutral"
-                            if candle_signal == "Buy" and last_5_signal == "Buy":
-                                final_signal = "Buy"
-                            elif candle_signal == "Sell" and last_5_signal == "Sell":
-                                final_signal = "Sell"
+                            if st.session_state.tp_target and current_balance - st.session_state.initial_balance >= st.session_state.tp_target:
+                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🤑 TP Reached! Bot stopped.")
+                                st.session_state.bot_running = False
                             
-                            current_second = datetime.now().second
-                            if current_second >= 55 and (last_analysis_time is None or (datetime.now() - last_analysis_time).seconds >= 60):
+                        if st.session_state.consecutive_losses >= st.session_state.max_consecutive_losses:
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 SL Reached ({st.session_state.max_consecutive_losses} consecutive losses)! Bot stopped.")
+                            st.session_state.bot_running = False
+                            
+                    else:
+                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Could not get contract info.")
+                        st.session_state.is_trade_open = False
+                        
+            except Exception as e:
+                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error getting result: {e}")
+            finally:
+                if ws:
+                    ws.close()
+                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🔌 Connection closed.")
+            
+            # Reset trade state for next cycle
+            st.session_state.trade_start_time = None
+            st.session_state.contract_id = None
+            st.rerun()
+
+    # --- Main Bot Logic (runs once per minute) ---
+    if st.session_state.bot_running and not st.session_state.is_trade_open:
+        current_minute = datetime.now().minute
+        # Only run if a minute has passed since the last action
+        if datetime.now() - st.session_state.last_action_time >= timedelta(minutes=1):
+            
+            # The trading window is from 55 to 59 seconds
+            if datetime.now().second >= 55:
+                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Starting analysis and trading cycle...")
+                
+                ws = None
+                try:
+                    # 1. Connect
+                    ws = websocket.WebSocket()
+                    ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929")
+                    
+                    # 2. Authorize
+                    auth_req = {"authorize": st.session_state.user_token}
+                    ws.send(json.dumps(auth_req))
+                    auth_response = json.loads(ws.recv())
+                    
+                    if auth_response.get('error'):
+                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Authorization failed: {auth_response['error']['message']}")
+                    else:
+                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Connection and authorization successful.")
+                        
+                        if st.session_state.initial_balance is None:
+                            st.session_state.initial_balance = get_balance(ws)
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Initial Balance: {st.session_state.initial_balance}")
+                            
+                        # 3. Get tick history
+                        req = {"ticks_history": symbol_input, "end": "latest", "count": 70, "style": "ticks"}
+                        ws.send(json.dumps(req))
+                        tick_data = json.loads(ws.recv())
+                        
+                        if 'history' in tick_data:
+                            ticks = tick_data['history']['prices']
+                            timestamps = tick_data['history']['times']
+                            df_ticks = pd.DataFrame({'timestamp': timestamps, 'price': ticks})
+                            
+                            if len(df_ticks) >= 70:
+                                candles_5ticks = ticks_to_ohlc_by_count(df_ticks.tail(70), 5)
+                                last_5_ticks = df_ticks.tail(5)
+
+                                candle_signal, _ = analyse_data(candles_5ticks)
+                                
+                                last_5_signal = "Neutral"
+                                if last_5_ticks['price'].iloc[-1] > last_5_ticks['price'].iloc[0]:
+                                    last_5_signal = "Buy"
+                                elif last_5_ticks['price'].iloc[-1] < last_5_ticks['price'].iloc[0]:
+                                    last_5_signal = "Sell"
+
+                                final_signal = "Neutral"
+                                if candle_signal == "Buy" and last_5_signal == "Buy":
+                                    final_signal = "Buy"
+                                elif candle_signal == "Sell" and last_5_signal == "Sell":
+                                    final_signal = "Sell"
+
                                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Candle Signal: {candle_signal.upper()}, Last 5 Ticks Signal: {last_5_signal.upper()}")
                                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Final Signal: {final_signal.upper()}")
-
-                                last_analysis_time = datetime.now()
-                                
-                                if final_signal in ['Buy', 'Sell'] and not st.session_state.is_trade_open:
+                                    
+                                if final_signal in ['Buy', 'Sell']:
                                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Placing a {final_signal.upper()} order with {st.session_state.current_amount}$")
                                     order_response = place_order(ws, st.session_state.user_token, symbol_input, final_signal, st.session_state.current_amount)
                                     
                                     if 'buy' in order_response:
-                                        contract_id = order_response.get('buy', {}).get('contract_id')
-                                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Order placed. ID: {contract_id}")
                                         st.session_state.is_trade_open = True
-                                        
-                                        time.sleep(70)
-                                        
-                                        contract_info = check_contract_status(ws, contract_id)
-                                        
-                                        if contract_info:
-                                            profit = contract_info.get('profit', 0)
-                                            is_win = profit > 0
-                                            
-                                            if is_win:
-                                                st.session_state.consecutive_losses = 0
-                                                st.session_state.current_amount = st.session_state.base_amount
-                                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🎉 WIN! Profit: {profit}")
-                                            else:
-                                                st.session_state.consecutive_losses += 1
-                                                st.session_state.current_amount *= 2.2
-                                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💔 LOSS! Loss: {profit}")
-                                            
-                                            st.session_state.is_trade_open = False
-                                            
-                                            current_balance = get_balance(ws)
-                                            if current_balance is not None:
-                                                if st.session_state.tp_target and current_balance - st.session_state.initial_balance >= st.session_state.tp_target:
-                                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🤑 TP Reached! Bot stopped.")
-                                                    st.session_state.bot_running = False
-                                                
-                                            if st.session_state.consecutive_losses >= st.session_state.max_consecutive_losses:
-                                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 SL Reached (5 consecutive losses)! Bot stopped.")
-                                                st.session_state.bot_running = False
-                                            
+                                        st.session_state.trade_start_time = datetime.now()
+                                        st.session_state.contract_id = order_response.get('buy', {}).get('contract_id')
+                                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Order placed. ID: {st.session_state.contract_id}")
                                     else:
                                         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Order failed: {order_response}")
-                                        st.session_state.is_trade_open = False
+                            else:
+                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Insufficient data received for analysis.")
+                        else:
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Failed to get tick history.")
 
-                except websocket.WebSocketTimeoutException:
-                    pass
                 except Exception as e:
-                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error: {e}")
-                
-                # Use a unique key to prevent the StreamlitDuplicateElementKey error
-                log_area.text_area("Logs", "\n".join(st.session_state.log_records), height=400, key=f"logs_{time.time()}")
-                time.sleep(1)
-            
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 Bot stopped.")
+                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error during trading cycle: {e}")
+                finally:
+                    if ws:
+                        ws.close()
+                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🔌 Connection closed.")
+                    
+                st.session_state.last_action_time = datetime.now()
+                st.rerun()
+
+    # Log area always visible and updated on every rerun
+    st.text_area("Logs", "\n".join(st.session_state.log_records), height=400, key=f"logs_{time.time()}")
+    
+    # Rerun the script periodically to check the time and trigger the next cycle
+    if st.session_state.bot_running:
+        st.experimental_rerun()
