@@ -556,7 +556,8 @@ else:
                 st.rerun()
 
     # Log area always visible and updated on every rerun
-    st.text_area("Logs", "\n".join(st.session_state.log_records), height=400, key=f"logs_{time.time()}")
+    with st.container(height=400):
+        st.text_area("Logs", "\n".join(st.session_state.log_records), height=400, key=f"logs_{time.time()}")
     
     # Rerun the script periodically to check the time and trigger the next cycle
     st.rerun()
