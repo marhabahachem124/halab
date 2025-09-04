@@ -15,7 +15,7 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 import streamlit.components.v1 as components
 
 # --- File-Based Licensing System ---
-# This file contains the device IDs of users who are allowed to run the bot.
+# هذا الملف يحتوي على معرفات الأجهزة للمستخدمين المسموح لهم بتشغيل البوت.
 ALLOWED_USERS_FILE = 'user_ids.txt'
 
 # --- Database Setup ---
@@ -154,16 +154,20 @@ def analyze_candlesticks(data):
     if len(data) >= 2:
         last = data.iloc[-1]
         prev = data.iloc[-2]
-        if (last['Close'] > last['Open'] and prev['Close'] < prev['Open'] and last['High'] > prev['High'] and last['Low'] < prev['Low']):
+        # Bullish Engulfing
+        if (last['Close'] > last['Open'] and prev['Close'] < prev['Open'] and last['Low'] <= prev['Low'] and last['High'] >= prev['High']):
             signal = "Buy"
-        if (last['Close'] < last['Open'] and prev['Close'] > prev['Open'] and last['High'] > prev['High'] and last['Low'] < prev['Low']):
+        # Bearish Engulfing
+        elif (last['Close'] < last['Open'] and prev['Close'] > prev['Open'] and last['Low'] <= prev['Low'] and last['High'] >= prev['High']):
             signal = "Sell"
+        # Hammer (Bullish)
         body = abs(last['Close'] - last['Open'])
-        lower_shadow = last['Open'] - last['Low'] if last['Open'] > last['Close'] else last['Close'] - last['Low']
-        upper_shadow = last['High'] - last['Close'] if last['Open'] > last['Close'] else last['High'] - last['Open']
-        if last['Close'] > last['Open'] and lower_shadow > body * 2 and upper_shadow < body:
+        lower_shadow = min(last['Open'], last['Close']) - last['Low']
+        upper_shadow = last['High'] - max(last['Open'], last['Close'])
+        if lower_shadow > body * 2 and upper_shadow < body:
             signal = "Buy"
-        if last['Close'] < last['Open'] and upper_shadow > body * 2 and lower_shadow < body:
+        # Shooting Star (Bearish)
+        if upper_shadow > body * 2 and lower_shadow < body:
             signal = "Sell"
     return signal
 
@@ -174,36 +178,36 @@ def analyse_data(data):
         data = data.tail(50).copy()
         signals = []
         
-        # Modified RSI logic: Buy if > 50, Sell if < 50
+        # Modified RSI logic: Always Buy or Sell
         data['RSI'] = ta.momentum.RSIIndicator(data['Close']).rsi()
-        if data['RSI'].iloc[-1] > 50: signals.append("Buy")
-        elif data['RSI'].iloc[-1] < 50: signals.append("Sell")
+        if data['RSI'].iloc[-1] >= 50: signals.append("Buy")
+        else: signals.append("Sell")
         
-        # Modified Stochastic logic: Buy if > 50, Sell if < 50
+        # Modified Stochastic logic: Always Buy or Sell
         data['Stoch_K'] = ta.momentum.StochasticOscillator(data['High'], data['Low'], data['Close']).stoch()
-        if data['Stoch_K'].iloc[-1] > 50: signals.append("Buy")
-        elif data['Stoch_K'].iloc[-1] < 50: signals.append("Sell")
+        if data['Stoch_K'].iloc[-1] >= 50: signals.append("Buy")
+        else: signals.append("Sell")
         
-        # ROC logic remains the same (already fast)
+        # ROC logic: Always Buy or Sell
         data['ROC'] = ta.momentum.ROCIndicator(data['Close']).roc()
-        if data['ROC'].iloc[-1] > 0: signals.append("Buy")
-        elif data['ROC'].iloc[-1] < 0: signals.append("Sell")
+        if data['ROC'].iloc[-1] >= 0: signals.append("Buy")
+        else: signals.append("Sell")
         
-        # Modified ADX logic: Buy if +DI > -DI, Sell if -DI > +DI (no ADX strength filter)
+        # Modified ADX logic: Always Buy or Sell
         adx_indicator = ta.trend.ADXIndicator(data['High'], data['Low'], data['Close'])
         data['ADX_pos'] = adx_indicator.adx_pos()
         data['ADX_neg'] = adx_indicator.adx_neg()
-        if data['ADX_pos'].iloc[-1] > data['ADX_neg'].iloc[-1]: signals.append("Buy")
-        elif data['ADX_neg'].iloc[-1] > data['ADX_pos'].iloc[-1]: signals.append("Sell")
+        if data['ADX_pos'].iloc[-1] >= data['ADX_neg'].iloc[-1]: signals.append("Buy")
+        else: signals.append("Sell")
         
-        # MACD logic remains the same (already fast)
+        # MACD logic: Always Buy or Sell
         macd_indicator = ta.trend.MACD(data['Close'])
         data['MACD'] = macd_indicator.macd()
         data['MACD_signal'] = macd_indicator.macd_signal()
-        if data['MACD'].iloc[-1] > data['MACD_signal'].iloc[-1]: signals.append("Buy")
-        elif data['MACD'].iloc[-1] < data['MACD_signal'].iloc[-1]: signals.append("Sell")
+        if data['MACD'].iloc[-1] >= data['MACD_signal'].iloc[-1]: signals.append("Buy")
+        else: signals.append("Sell")
         
-        # Ichimoku logic remains the same (already fast)
+        # Ichimoku logic: Always Buy or Sell
         ichimoku_indicator = ta.trend.IchimokuIndicator(data['High'], data['Low'])
         data['ichimoku_a'] = ichimoku_indicator.ichimoku_a()
         data['ichimoku_b'] = ichimoku_indicator.ichimoku_b()
@@ -212,23 +216,38 @@ def analyse_data(data):
         cloud_b = data.iloc[-1]['ichimoku_b']
         if last_close_ichimoku > max(cloud_a, cloud_b): signals.append("Buy")
         elif last_close_ichimoku < min(cloud_a, cloud_b): signals.append("Sell")
+        else: 
+            # If inside the cloud, check if above or below the conversion line (Tenkan-sen)
+            tenkan_sen = (data['High'].rolling(9).max() + data['Low'].rolling(9).min()) / 2
+            if last_close_ichimoku > tenkan_sen.iloc[-1]: signals.append("Buy")
+            else: signals.append("Sell")
         
-        # EMA logic remains the same
+        # EMA logic: Always Buy or Sell
         if len(data) >= 20:
             data['ema10'] = ta.trend.EMAIndicator(data['Close'], window=10).ema_indicator()
             data['ema20'] = ta.trend.EMAIndicator(data['Close'], window=20).ema_indicator()
-            if data['ema10'].iloc[-1] > data['ema20'].iloc[-1]: signals.append("Buy")
-            elif data['ema10'].iloc[-1] < data['ema20'].iloc[-1]: signals.append("Sell")
+            if data['ema10'].iloc[-1] >= data['ema20'].iloc[-1]: signals.append("Buy")
+            else: signals.append("Sell")
             last_close = data.iloc[-1]['Close']
-            if last_close > data['ema20'].iloc[-1] and last_close > data['ema10'].iloc[-1]: signals.append("Buy")
+            if last_close >= data['ema20'].iloc[-1] and last_close >= data['ema10'].iloc[-1]: signals.append("Buy")
             elif last_close < data['ema20'].iloc[-1] and last_close < data['ema10'].iloc[-1]: signals.append("Sell")
+            else:
+                if last_close > data['ema20'].iloc[-1]: signals.append("Buy")
+                else: signals.append("Sell")
             
         candlestick_signal = analyze_candlesticks(data)
         if candlestick_signal != "Neutral":
             signals.append(candlestick_signal)
+        else:
+            if data.iloc[-1]['Close'] > data.iloc[-2]['Close']:
+                signals.append("Buy")
+            else:
+                signals.append("Sell")
             
         supports, resistances = find_support_resistance(data)
         last_close = data.iloc[-1]['Close']
+        if not supports and not resistances:
+            signals.append("Buy")
         for support in supports:
             if abs(last_close - support) / support < 0.0001:  
                 signals.append("Buy")
