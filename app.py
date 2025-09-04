@@ -389,9 +389,9 @@ else:
     if st.session_state.bot_running:
         status_placeholder.info("Analysing...")
         
-        current_time = datetime.now()
-        time_elapsed = current_time - st.session_state.last_action_time
-        seconds_left = max(0, 60 - time_elapsed.seconds)
+        now = datetime.now()
+        next_minute = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
+        seconds_left = max(0, (next_minute - now).seconds - 5)
         
         timer_placeholder.metric("Next action in", f"{seconds_left}s")
     else:
@@ -463,77 +463,78 @@ else:
 
     # --- Main Bot Logic (runs once per minute) ---
     if st.session_state.bot_running and not st.session_state.is_trade_open:
-        if datetime.now() - st.session_state.last_action_time >= timedelta(minutes=1):
-            if datetime.now().second >= 55:
+        now = datetime.now()
+        seconds_in_minute = now.second
+        if seconds_in_minute >= 55:
+            
+            ws = None
+            try:
+                ws = websocket.WebSocket()
+                ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929")
                 
-                ws = None
-                try:
-                    ws = websocket.WebSocket()
-                    ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929")
-                    
-                    auth_req = {"authorize": st.session_state.user_token}
-                    ws.send(json.dumps(auth_req))
-                    auth_response = json.loads(ws.recv())
-                    
-                    if auth_response.get('error'):
-                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Authorization failed: {auth_response['error']['message']}")
-                    else:
-                        if st.session_state.initial_balance is None:
-                            st.session_state.initial_balance = get_balance(ws)
-                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Initial Balance: {st.session_state.initial_balance}")
-                            
-                        req = {"ticks_history": "R_100", "end": "latest", "count": 70, "style": "ticks"}
-                        ws.send(json.dumps(req))
-                        tick_data = json.loads(ws.recv())
+                auth_req = {"authorize": st.session_state.user_token}
+                ws.send(json.dumps(auth_req))
+                auth_response = json.loads(ws.recv())
+                
+                if auth_response.get('error'):
+                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Authorization failed: {auth_response['error']['message']}")
+                else:
+                    if st.session_state.initial_balance is None:
+                        st.session_state.initial_balance = get_balance(ws)
+                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Initial Balance: {st.session_state.initial_balance}")
                         
-                        if 'history' in tick_data:
-                            ticks = tick_data['history']['prices']
-                            timestamps = tick_data['history']['times']
-                            df_ticks = pd.DataFrame({'timestamp': timestamps, 'price': ticks})
-                            
-                            if len(df_ticks) >= 70:
-                                candles_5ticks = ticks_to_ohlc_by_count(df_ticks.tail(70), 5)
-                                last_5_ticks = df_ticks.tail(5)
-
-                                candle_signal, _ = analyse_data(candles_5ticks)
-                                
-                                last_5_signal = "Neutral"
-                                if last_5_ticks['price'].iloc[-1] > last_5_ticks['price'].iloc[0]:
-                                    last_5_signal = "Buy"
-                                elif last_5_ticks['price'].iloc[-1] < last_5_ticks['price'].iloc[0]:
-                                    last_5_signal = "Sell"
-
-                                final_signal = "Neutral"
-                                if candle_signal == "Buy" and last_5_signal == "Buy":
-                                    final_signal = "Buy"
-                                elif candle_signal == "Sell" and last_5_signal == "Sell":
-                                    final_signal = "Sell"
-                                
-                                if final_signal is not None and final_signal in ['Buy', 'Sell']:
-                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Candle Signal: {candle_signal}, Last 5 Ticks Signal: {last_5_signal}")
-                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Final Signal: {final_signal.upper()}")
-                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Placing a {final_signal.upper()} order with {st.session_state.current_amount}$")
-                                    order_response = place_order(ws, st.session_state.user_token, "R_100", final_signal, st.session_state.current_amount)
-                                    
-                                    if 'buy' in order_response:
-                                        st.session_state.is_trade_open = True
-                                        st.session_state.trade_start_time = datetime.now()
-                                        st.session_state.contract_id = order_response.get('buy', {}).get('contract_id')
-                                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Order placed. ID: {st.session_state.contract_id}")
-                                    else:
-                                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Order failed: {order_response}")
-                                else:
-                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ No strong signal found. No trade placed.")
-
-
-                except Exception as e:
-                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error during trading cycle: {e}")
-                finally:
-                    if ws:
-                        ws.close()
+                    req = {"ticks_history": "R_100", "end": "latest", "count": 70, "style": "ticks"}
+                    ws.send(json.dumps(req))
+                    tick_data = json.loads(ws.recv())
                     
-                st.session_state.last_action_time = datetime.now()
-                st.rerun()
+                    if 'history' in tick_data:
+                        ticks = tick_data['history']['prices']
+                        timestamps = tick_data['history']['times']
+                        df_ticks = pd.DataFrame({'timestamp': timestamps, 'price': ticks})
+                        
+                        if len(df_ticks) >= 70:
+                            candles_5ticks = ticks_to_ohlc_by_count(df_ticks.tail(70), 5)
+
+                            provisional_decision, error_msg = analyse_data(candles_5ticks)
+                            
+                            last_5_ticks = df_ticks.tail(5)
+                            last_5_signal = "Neutral"
+                            if last_5_ticks['price'].iloc[-1] > last_5_ticks['price'].iloc[0]:
+                                last_5_signal = "Buy"
+                            elif last_5_ticks['price'].iloc[-1] < last_5_ticks['price'].iloc[0]:
+                                last_5_signal = "Sell"
+
+                            final_signal = "Neutral"
+                            if provisional_decision == "Buy" and last_5_signal == "Buy":
+                                final_signal = "Buy"
+                            elif provisional_decision == "Sell" and last_5_signal == "Sell":
+                                final_signal = "Sell"
+                            
+                            if final_signal is not None and final_signal in ['Buy', 'Sell']:
+                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Candle Signal: {provisional_decision}, Last 5 Ticks Signal: {last_5_signal}")
+                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Final Signal: {final_signal.upper()}")
+                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Placing a {final_signal.upper()} order with {st.session_state.current_amount}$")
+                                order_response = place_order(ws, st.session_state.user_token, "R_100", final_signal, st.session_state.current_amount)
+                                
+                                if 'buy' in order_response:
+                                    st.session_state.is_trade_open = True
+                                    st.session_state.trade_start_time = datetime.now()
+                                    st.session_state.contract_id = order_response.get('buy', {}).get('contract_id')
+                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Order placed. ID: {st.session_state.contract_id}")
+                                else:
+                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Order failed: {order_response}")
+                            else:
+                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ No strong signal found. No trade placed.")
+
+
+            except Exception as e:
+                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error during trading cycle: {e}")
+            finally:
+                if ws:
+                    ws.close()
+                
+            st.session_state.last_action_time = datetime.now()
+            st.rerun()
 
     # --- Display Pages based on state ---
     if st.session_state.page == 'inputs':
