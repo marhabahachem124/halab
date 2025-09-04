@@ -491,11 +491,6 @@ else:
                                                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 SL Reached (5 consecutive losses)! Bot stopped.")
                                                 st.session_state.bot_running = False
                                             
-                                            log_area.text_area("Logs", "\n".join(st.session_state.log_records), height=400, key="logs")
-                                        else:
-                                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Could not get contract info.")
-                                            st.session_state.is_trade_open = False
-                                            
                                     else:
                                         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Order failed: {order_response}")
                                         st.session_state.is_trade_open = False
@@ -505,7 +500,8 @@ else:
                 except Exception as e:
                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error: {e}")
                 
-                log_area.text_area("Logs", "\n".join(st.session_state.log_records), height=400, key="logs")
+                # Use a unique key to prevent the StreamlitDuplicateElementKey error
+                log_area.text_area("Logs", "\n".join(st.session_state.log_records), height=400, key=f"logs_{time.time()}")
                 time.sleep(1)
             
             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 Bot stopped.")
