@@ -12,6 +12,7 @@ import collections
 import random
 import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker, declarative_base
+import streamlit.components.v1 as components
 
 # --- File-Based Licensing System ---
 # This file contains the device IDs of users who are allowed to run the bot.
@@ -172,27 +173,37 @@ def analyse_data(data):
             return None, 0, 0, "Error: Insufficient data for analysis (less than 50 candles)."
         data = data.tail(50).copy()
         signals = []
+        
+        # Modified RSI logic: Buy if > 50, Sell if < 50
         data['RSI'] = ta.momentum.RSIIndicator(data['Close']).rsi()
-        if data['RSI'].iloc[-1] < 30: signals.append("Buy")
-        elif data['RSI'].iloc[-1] > 70: signals.append("Sell")
+        if data['RSI'].iloc[-1] > 50: signals.append("Buy")
+        elif data['RSI'].iloc[-1] < 50: signals.append("Sell")
+        
+        # Modified Stochastic logic: Buy if > 50, Sell if < 50
         data['Stoch_K'] = ta.momentum.StochasticOscillator(data['High'], data['Low'], data['Close']).stoch()
-        if data['Stoch_K'].iloc[-1] < 20: signals.append("Buy")
-        elif data['Stoch_K'].iloc[-1] > 80: signals.append("Sell")
+        if data['Stoch_K'].iloc[-1] > 50: signals.append("Buy")
+        elif data['Stoch_K'].iloc[-1] < 50: signals.append("Sell")
+        
+        # ROC logic remains the same (already fast)
         data['ROC'] = ta.momentum.ROCIndicator(data['Close']).roc()
         if data['ROC'].iloc[-1] > 0: signals.append("Buy")
         elif data['ROC'].iloc[-1] < 0: signals.append("Sell")
+        
+        # Modified ADX logic: Buy if +DI > -DI, Sell if -DI > +DI (no ADX strength filter)
         adx_indicator = ta.trend.ADXIndicator(data['High'], data['Low'], data['Close'])
-        data['ADX'] = adx_indicator.adx()
         data['ADX_pos'] = adx_indicator.adx_pos()
         data['ADX_neg'] = adx_indicator.adx_neg()
-        if data['ADX'].iloc[-1] > 25:
-            if data['ADX_pos'].iloc[-1] > data['ADX_neg'].iloc[-1]: signals.append("Buy")
-            elif data['ADX_neg'].iloc[-1] > data['ADX_pos'].iloc[-1]: signals.append("Sell")
+        if data['ADX_pos'].iloc[-1] > data['ADX_neg'].iloc[-1]: signals.append("Buy")
+        elif data['ADX_neg'].iloc[-1] > data['ADX_pos'].iloc[-1]: signals.append("Sell")
+        
+        # MACD logic remains the same (already fast)
         macd_indicator = ta.trend.MACD(data['Close'])
         data['MACD'] = macd_indicator.macd()
         data['MACD_signal'] = macd_indicator.macd_signal()
         if data['MACD'].iloc[-1] > data['MACD_signal'].iloc[-1]: signals.append("Buy")
         elif data['MACD'].iloc[-1] < data['MACD_signal'].iloc[-1]: signals.append("Sell")
+        
+        # Ichimoku logic remains the same (already fast)
         ichimoku_indicator = ta.trend.IchimokuIndicator(data['High'], data['Low'])
         data['ichimoku_a'] = ichimoku_indicator.ichimoku_a()
         data['ichimoku_b'] = ichimoku_indicator.ichimoku_b()
@@ -201,6 +212,8 @@ def analyse_data(data):
         cloud_b = data.iloc[-1]['ichimoku_b']
         if last_close_ichimoku > max(cloud_a, cloud_b): signals.append("Buy")
         elif last_close_ichimoku < min(cloud_a, cloud_b): signals.append("Sell")
+        
+        # EMA logic remains the same
         if len(data) >= 20:
             data['ema10'] = ta.trend.EMAIndicator(data['Close'], window=10).ema_indicator()
             data['ema20'] = ta.trend.EMAIndicator(data['Close'], window=20).ema_indicator()
@@ -209,9 +222,11 @@ def analyse_data(data):
             last_close = data.iloc[-1]['Close']
             if last_close > data['ema20'].iloc[-1] and last_close > data['ema10'].iloc[-1]: signals.append("Buy")
             elif last_close < data['ema20'].iloc[-1] and last_close < data['ema10'].iloc[-1]: signals.append("Sell")
+            
         candlestick_signal = analyze_candlesticks(data)
         if candlestick_signal != "Neutral":
             signals.append(candlestick_signal)
+            
         supports, resistances = find_support_resistance(data)
         last_close = data.iloc[-1]['Close']
         for support in supports:
@@ -224,6 +239,7 @@ def analyse_data(data):
                 signals.append("Sell")
             elif last_close > resistance:
                 signals.append("Buy")
+                
         buy_count = signals.count("Buy")
         sell_count = signals.count("Sell")
         final_decision = "Neutral"
@@ -231,6 +247,7 @@ def analyse_data(data):
             final_decision = "Buy"
         elif sell_count > buy_count:
             final_decision = "Sell"
+            
         return final_decision, buy_count, sell_count, None
     except Exception as e:
         return None, 0, 0, f"An error occurred during analysis: {e}"
@@ -352,21 +369,30 @@ else:
                         if len(df_ticks) >= 70:
                             candles_5ticks = ticks_to_ohlc_by_count(df_ticks.tail(70), 5)
                             provisional_decision, buy_count, sell_count, error_msg = analyse_data(candles_5ticks)
-                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📈 Buy signals: {buy_count}, Sell signals: {sell_count}")
+                            
+                            # Check last 5 ticks direction
                             last_5_ticks = df_ticks.tail(5)
                             last_5_signal = "Neutral"
                             if last_5_ticks['price'].iloc[-1] > last_5_ticks['price'].iloc[0]:
                                 last_5_signal = "Buy"
                             elif last_5_ticks['price'].iloc[-1] < last_5_ticks['price'].iloc[0]:
                                 last_5_signal = "Sell"
+                                
+                            # Check last 60 ticks direction
+                            last_60_ticks = df_ticks.tail(60)
+                            last_60_signal = "Neutral"
+                            if last_60_ticks['price'].iloc[-1] > last_60_ticks['price'].iloc[0]:
+                                last_60_signal = "Buy"
+                            elif last_60_ticks['price'].iloc[-1] < last_60_ticks['price'].iloc[0]:
+                                last_60_signal = "Sell"
+                                
                             final_signal = "Neutral"
-                            if provisional_decision == "Buy" and last_5_signal == "Buy":
+                            if provisional_decision == "Buy" and last_5_signal == "Buy" and last_60_signal == "Buy":
                                 final_signal = "Buy"
-                            elif provisional_decision == "Sell" and last_5_signal == "Sell":
+                            elif provisional_decision == "Sell" and last_5_signal == "Sell" and last_60_signal == "Sell":
                                 final_signal = "Sell"
                             
                             if final_signal is not None and final_signal in ['Buy', 'Sell']:
-                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Provisional Signal: {provisional_decision}, Last 5 Ticks Signal: {last_5_signal}")
                                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Final Signal: {final_signal.upper()}")
                                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Placing a {final_signal.upper()} order with {st.session_state.current_amount}$")
                                 order_response = place_order(ws, st.session_state.user_token, "R_100", final_signal, st.session_state.current_amount)
@@ -378,8 +404,9 @@ else:
                                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Order placed. Contract ID: {st.session_state.contract_id}")
                                 else:
                                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Order failed: {order_response}")
-                            else:
-                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ No strong signal found. No trade placed.")
+                    
+                    else:
+                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error: Could not get tick history data from API.")
             except Exception as e:
                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ An error occurred during the trading cycle: {e}")
             finally:
@@ -420,6 +447,7 @@ else:
                         if current_balance is not None:
                             if st.session_state.initial_balance is None:
                                 st.session_state.initial_balance = current_balance
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 New Balance: {current_balance}")
                             if st.session_state.tp_target and current_balance - st.session_state.initial_balance >= st.session_state.tp_target:
                                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🤑 TP hit! Bot stopped.")
                                 st.session_state.bot_running = False
@@ -461,6 +489,19 @@ else:
         st.header("2. Live Bot Logs")
         with st.container(height=600):
             st.text_area("Logs", "\n".join(st.session_state.log_records), height=600)
+            # إضافة سطر برمجي للتمرير التلقائي إلى الأسفل
+            components.html(
+                """
+                <script>
+                    var textarea = parent.document.querySelector('textarea[aria-label="Logs"]');
+                    if(textarea) {
+                        textarea.scrollTop = textarea.scrollHeight;
+                    }
+                </script>
+                """,
+                height=0,
+                width=0
+            )
     st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
