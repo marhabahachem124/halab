@@ -74,6 +74,8 @@ if 'max_consecutive_losses' not in st.session_state:
     st.session_state.max_consecutive_losses = 5
 if 'last_action_time' not in st.session_state:
     st.session_state.last_action_time = datetime.min
+if 'page' not in st.session_state:
+    st.session_state.page = 'inputs'
 
 # --- User IDs from file ---
 allowed_ids = set()
@@ -341,9 +343,8 @@ def get_balance(ws):
     response = json.loads(ws.recv())
     return response.get('balance', {}).get('balance')
 
-# --- Streamlit UI Layout ---
+# --- Main App Logic and UI ---
 st.title("KHOURYBOT - Autotrading 🤖")
-st.markdown("---")
 
 if not st.session_state.is_authenticated:
     st.header("Login to Your Account")
@@ -372,36 +373,8 @@ elif not st.session_state.user_token_exists:
             else:
                 st.error("Failed to save token. Please try again.")
 else:
-    st.header("1. Bot Settings")
-    st.write(f"Logged in as: **{st.session_state.user_id}**")
-    st.write("Your Deriv API Token has been loaded automatically.")
-    
-    symbol_input = "R_100"
-    st.session_state.base_amount = st.number_input("Base Amount", min_value=0.5, step=0.5, value=st.session_state.base_amount)
-    st.session_state.tp_target = st.number_input("Take Profit (TP)", min_value=1.0, step=1.0, value=st.session_state.tp_target)
-    
-    start_button = st.button("Start Bot")
-    stop_button = st.button("Stop Bot")
-
-    if start_button:
-        st.session_state.bot_running = True
-        st.session_state.current_amount = st.session_state.base_amount
-        st.session_state.consecutive_losses = 0
-        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot has started. Waiting for analysis window...")
-        st.rerun()
-    
-    if stop_button:
-        st.session_state.bot_running = False
-        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 Bot stopped by user.")
-        st.rerun()
-
-    st.markdown("---")
-    st.header("2. Live Logs")
-    
-    # Check if a trade is pending to get the result
+    # --- Check for pending trade result ---
     if st.session_state.is_trade_open and st.session_state.trade_start_time:
-        
-        # Check if 70 seconds have passed since the trade was placed
         if datetime.now() >= st.session_state.trade_start_time + timedelta(seconds=70):
             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⏱️ 70 seconds passed. Reconnecting to get result...")
             
@@ -461,27 +434,21 @@ else:
                     ws.close()
                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🔌 Connection closed.")
             
-            # Reset trade state for next cycle
             st.session_state.trade_start_time = None
             st.session_state.contract_id = None
             st.rerun()
 
     # --- Main Bot Logic (runs once per minute) ---
     if st.session_state.bot_running and not st.session_state.is_trade_open:
-        # Only run if a minute has passed since the last action
         if datetime.now() - st.session_state.last_action_time >= timedelta(minutes=1):
-            
-            # The trading window is from 55 to 59 seconds
             if datetime.now().second >= 55:
                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Starting analysis and trading cycle...")
                 
                 ws = None
                 try:
-                    # 1. Connect
                     ws = websocket.WebSocket()
                     ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929")
                     
-                    # 2. Authorize
                     auth_req = {"authorize": st.session_state.user_token}
                     ws.send(json.dumps(auth_req))
                     auth_response = json.loads(ws.recv())
@@ -495,8 +462,7 @@ else:
                             st.session_state.initial_balance = get_balance(ws)
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Initial Balance: {st.session_state.initial_balance}")
                             
-                        # 3. Get tick history
-                        req = {"ticks_history": symbol_input, "end": "latest", "count": 70, "style": "ticks"}
+                        req = {"ticks_history": "R_100", "end": "latest", "count": 70, "style": "ticks"}
                         ws.send(json.dumps(req))
                         tick_data = json.loads(ws.recv())
                         
@@ -529,7 +495,7 @@ else:
                                 
                                 if final_signal in ['Buy', 'Sell']:
                                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Placing a {final_signal.upper()} order with {st.session_state.current_amount}$")
-                                    order_response = place_order(ws, st.session_state.user_token, symbol_input, final_signal, st.session_state.current_amount)
+                                    order_response = place_order(ws, st.session_state.user_token, "R_100", final_signal, st.session_state.current_amount)
                                     
                                     if 'buy' in order_response:
                                         st.session_state.is_trade_open = True
@@ -555,9 +521,48 @@ else:
                 st.session_state.last_action_time = datetime.now()
                 st.rerun()
 
-    # Log area always visible and updated on every rerun
-    with st.container(height=400):
-        st.text_area("Logs", "\n".join(st.session_state.log_records), height=400, key=f"logs_{time.time()}")
-    
+    # --- Display Pages based on state ---
+    if st.session_state.page == 'inputs':
+        st.header("1. Bot Settings")
+        st.write(f"Logged in as: **{st.session_state.user_id}**")
+        st.write("Your Deriv API Token has been loaded automatically.")
+        
+        symbol_input = "R_100"
+        st.session_state.base_amount = st.number_input("Base Amount", min_value=0.5, step=0.5, value=st.session_state.base_amount)
+        st.session_state.tp_target = st.number_input("Take Profit (TP)", min_value=1.0, step=1.0, value=st.session_state.tp_target)
+        
+        start_button = st.button("Start Bot")
+        stop_button = st.button("Stop Bot")
+
+        if start_button:
+            st.session_state.bot_running = True
+            st.session_state.current_amount = st.session_state.base_amount
+            st.session_state.consecutive_losses = 0
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot has started. Waiting for analysis window...")
+            st.rerun()
+        
+        if stop_button:
+            st.session_state.bot_running = False
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 Bot stopped by user.")
+            st.rerun()
+            
+    elif st.session_state.page == 'logs':
+        st.header("2. Live Logs")
+        with st.container(height=600):
+            st.text_area("Logs", "\n".join(st.session_state.log_records), height=600)
+
+    # --- Footer with Navigation Buttons ---
+    st.markdown("---")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Inputs"):
+            st.session_state.page = 'inputs'
+            st.rerun()
+    with col2:
+        if st.button("Logs"):
+            st.session_state.page = 'logs'
+            st.rerun()
+            
     # Rerun the script periodically to check the time and trigger the next cycle
+    time.sleep(1)
     st.rerun()
