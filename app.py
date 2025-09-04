@@ -283,7 +283,7 @@ def place_order(ws, api_token, symbol, action, amount):
         "buy": 1,
         "price": amount,
         "type": "CALL" if action == 'buy' else "PUT",
-        "duration": 5,
+        "duration": 1,
         "duration_unit": "m",
         "symbol": symbol
     }
@@ -345,6 +345,21 @@ else:
     if st.session_state.bot_running:
         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot is running for {symbol_input} with {amount_input}$")
         
+        def get_deriv_ws_connection(api_token):
+            try:
+                ws = websocket.WebSocket()
+                ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929")
+                return ws
+            except Exception as e:
+                st.error(f"Failed to connect to Deriv: {e}")
+                return None
+
+        def authorize_deriv(ws, api_token):
+            req = {"authorize": api_token}
+            ws.send(json.dumps(req))
+            response = json.loads(ws.recv())
+            return response
+
         ws = get_deriv_ws_connection(st.session_state.user_token)
         if ws:
             auth_response = authorize_deriv(ws, st.session_state.user_token)
