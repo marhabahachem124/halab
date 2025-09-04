@@ -11,14 +11,13 @@ import os
 import collections
 import random
 import sqlalchemy as sa
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, declarative_base
 
-# --- نظام الترخيص القائم على الملفات ---
-# هذا الملف يحتوي على الأرقام التعريفية للمستخدمين المسموح لهم بتشغيل البوت.
+# --- File-Based Licensing System ---
+# This file contains the device IDs of users who are allowed to run the bot.
 ALLOWED_USERS_FILE = 'user_ids.txt'
 
-# --- إعداد قاعدة البيانات ---
+# --- Database Setup ---
 DATABASE_URL = "postgresql://khourybot_db_user:wlVAwKwLhfzzH9HFsRMNo3IOo4dX6DYm@dpg-d2smi46r433s73frbbcg-a/khourybot_db"
 engine = sa.create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
@@ -31,7 +30,7 @@ class Device(Base):
 
 Base.metadata.create_all(engine)
 
-# --- متغيرات التهيئة وحالة التطبيق ---
+# --- Initialization and App State Variables ---
 if 'is_authenticated' not in st.session_state:
     st.session_state.is_authenticated = False
 if 'user_id' not in st.session_state:
@@ -75,47 +74,45 @@ if 'page' not in st.session_state:
 if 'is_analysing' not in st.session_state:
     st.session_state.is_analysing = False
 
-# --- فحص الترخيص وتوليد الرقم التعريفي للمستخدم ---
+# --- License Check and Device ID Generation ---
 def get_or_create_device_id():
     """
-    يسترجع الرقم التعريفي للجهاز من قاعدة البيانات أو ينشئ واحدًا جديدًا ويحفظه.
+    Retrieves the device ID from the database or creates a new one and saves it.
     """
     session = Session()
     try:
         device = session.query(Device).first()
         if device:
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ تم استرجاع الرقم التعريفي من قاعدة البيانات.")
-            return device.device_id
+            # ID retrieved, don't re-log
+            return device.device_id, "retrieved"
         else:
             new_id = str(random.randint(1000000000000000, 9999999999999999))
             new_device = Device(device_id=new_id)
             session.add(new_device)
             session.commit()
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✨ تم إنشاء رقم تعريفي جديد وحفظه في قاعدة البيانات.")
-            return new_id
+            return new_id, "created"
     except Exception as e:
         session.rollback()
-        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ فشل الاتصال بقاعدة البيانات أو حدث خطأ: {e}")
-        return None
+        return None, f"error: {e}"
     finally:
         session.close()
 
 def is_user_allowed(user_id):
-    """يتحقق مما إذا كان الرقم التعريفي للمستخدم موجودًا في القائمة المسموح بها."""
+    """Checks if the user's device ID is in the allowed list."""
     try:
         with open(ALLOWED_USERS_FILE, 'r') as f:
             allowed_ids = {line.strip() for line in f}
             if user_id in allowed_ids:
                 return True
     except FileNotFoundError:
-        st.error(f"خطأ: لم يتم العثور على '{ALLOWED_USERS_FILE}'. يرجى إنشاء هذا الملف بقائمة من الأرقام التعريفية المسموح بها للمستخدمين.")
+        st.error(f"Error: '{ALLOWED_USERS_FILE}' not found. Please create this file with a list of allowed user IDs.")
         return False
     except Exception as e:
-        st.error(f"خطأ أثناء قراءة '{ALLOWED_USERS_FILE}': {e}")
+        st.error(f"Error reading '{ALLOWED_USERS_FILE}': {e}")
         return False
     return False
 
-# --- الدوال من الكود الخاص بك ---
+# --- Your Custom Functions ---
 def ticks_to_ohlc_by_count(ticks_df, tick_count):
     if ticks_df.empty:
         return pd.DataFrame()
@@ -310,10 +307,10 @@ def check_contract_status(ws, contract_id):
                 if is_sold:
                     return response['proposal_open_contract']
         except websocket.WebSocketTimeoutException:
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ انتهت المهلة في انتظار معلومات العقد. جارٍ إعادة التحقق...")
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Timeout waiting for contract info. Re-checking...")
             time.sleep(5)
         except Exception as e:
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ حدث خطأ أثناء التحقق من حالة العقد: {e}")
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ An error occurred while checking contract status: {e}")
             return None
 
 def get_balance(ws):
@@ -322,49 +319,55 @@ def get_balance(ws):
     response = json.loads(ws.recv())
     return response.get('balance', {}).get('balance')
 
-# --- منطق التطبيق الرئيسي وواجهة المستخدم ---
-st.title("KHOURYBOT - التداول الآلي 🤖")
+# --- Main App Logic and UI ---
+st.title("KHOURYBOT - Automated Trading 🤖")
 
-# --- قسم المصادقة (Authentication) ---
-st.session_state.user_id = get_or_create_device_id()
+# Check for 'user_id_checked' to avoid rerunning on every reload
+if 'user_id_checked' not in st.session_state:
+    st.session_state.user_id, status = get_or_create_device_id()
+    if st.session_state.user_id is None:
+        st.error("Could not get device ID. Please check database connection.")
+        st.session_state.user_id_checked = True # Stop checking to prevent loops
+    else:
+        log_message = f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Device ID retrieved from database." if status == 'retrieved' else f"[{datetime.now().strftime('%H:%M:%S')}] ✨ New device ID created and saved to database."
+        st.session_state.log_records.append(log_message)
+        st.session_state.user_id_checked = True
 
-if st.session_state.user_id is None:
-    st.error("تعذر الحصول على الرقم التعريفي للجهاز. يرجى التحقق من اتصال قاعدة البيانات.")
-elif not st.session_state.is_authenticated:
-    st.header("تسجيل الدخول إلى حسابك")
-    if is_user_allowed(st.session_state.user_id):
+if not st.session_state.is_authenticated:
+    st.header("Log in to Your Account")
+    if st.session_state.user_id and is_user_allowed(st.session_state.user_id):
         st.session_state.is_authenticated = True
-        st.success("تم تنشيط جهازك! جارٍ إعادة التوجيه إلى الإعدادات...")
+        st.success("Your device has been activated! Redirecting to settings...")
         st.balloons()
         st.rerun()
     else:
-        st.warning("لم يتم تنشيط جهازك بعد. لتفعيل البوت، يرجى إرسال هذا الرقم التعريفي إلى مسؤول البوت:")
+        st.warning("Your device has not been activated yet. To activate the bot, please send this ID to the bot administrator:")
         st.code(st.session_state.user_id)
-        st.info("بعد التفعيل، ما عليك سوى تحديث هذه الصفحة للمتابعة.")
+        st.info("After activation, simply refresh this page to continue.")
 
 else:
-    # --- عرض الحالة والمؤقت ---
+    # --- Display Status and Timer ---
     status_placeholder = st.empty()
     timer_placeholder = st.empty()
 
     if st.session_state.bot_running:
         if not st.session_state.is_trade_open:
-            status_placeholder.info("جارٍ التحليل...")
+            status_placeholder.info("Analyzing...")
             now = datetime.now()
             next_minute = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
             seconds_left = max(0, (next_minute - now).seconds - 5)
-            timer_placeholder.metric("الإجراء التالي خلال", f"{seconds_left}s")
+            timer_placeholder.metric("Next action in", f"{seconds_left}s")
         else:
-            status_placeholder.info("في انتظار نتيجة الصفقة...")
+            status_placeholder.info("Waiting for trade result...")
             timer_placeholder.empty()
     else:
         status_placeholder.empty()
         timer_placeholder.empty()
 
-    # --- التحقق من نتيجة الصفقة المعلقة ---
+    # --- Check Pending Trade Result ---
     if st.session_state.is_trade_open and st.session_state.trade_start_time:
         if datetime.now() >= st.session_state.trade_start_time + timedelta(seconds=70):
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⏱️ جارٍ التحقق من نتيجة الصفقة...")
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⏱️ Checking trade result...")
             
             ws = None
             try:
@@ -376,7 +379,7 @@ else:
                 auth_response = json.loads(ws.recv())
                 
                 if auth_response.get('error'):
-                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ فشل إعادة الاتصال. خطأ في المصادقة.")
+                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Reconnection failed. Authentication error.")
                     st.session_state.bot_running = False
                     st.session_state.is_trade_open = False
                 else:
@@ -389,11 +392,11 @@ else:
                         if is_win:
                             st.session_state.consecutive_losses = 0
                             st.session_state.current_amount = st.session_state.base_amount
-                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🎉 فوز! الربح: {profit}")
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🎉 Win! Profit: {profit}")
                         else:
                             st.session_state.consecutive_losses += 1
                             st.session_state.current_amount *= 2.2
-                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💔 خسارة! الخسارة: {profit}")
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💔 Loss! Loss: {profit}")
                         
                         st.session_state.is_trade_open = False
                         
@@ -403,19 +406,19 @@ else:
                                 st.session_state.initial_balance = current_balance
                             
                             if st.session_state.tp_target and current_balance - st.session_state.initial_balance >= st.session_state.tp_target:
-                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🤑 تم الوصول إلى TP! تم إيقاف البوت.")
+                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🤑 TP hit! Bot stopped.")
                                 st.session_state.bot_running = False
                             
                         if st.session_state.consecutive_losses >= st.session_state.max_consecutive_losses:
-                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 تم الوصول إلى SL ({st.session_state.max_consecutive_losses} خسائر متتالية)! تم إيقاف البوت.")
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 SL hit ({st.session_state.max_consecutive_losses} consecutive losses)! Bot stopped.")
                             st.session_state.bot_running = False
                             
                     else:
-                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ تعذر الحصول على معلومات العقد.")
+                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Could not get contract info.")
                         st.session_state.is_trade_open = False
                         
             except Exception as e:
-                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ حدث خطأ في الحصول على النتيجة: {e}")
+                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ An error occurred getting the result: {e}")
             finally:
                 if ws:
                     ws.close()
@@ -424,12 +427,12 @@ else:
             st.session_state.contract_id = None
             st.rerun()
 
-    # --- منطق البوت الرئيسي (يعمل مرة واحدة كل دقيقة) ---
+    # --- Main Bot Logic (Runs once per minute) ---
     if st.session_state.bot_running and not st.session_state.is_trade_open:
         now = datetime.now()
         seconds_in_minute = now.second
         
-        # التحقق مما إذا كانت 60 ثانية قد مرت منذ آخر إجراء
+        # Check if 60 seconds have passed since the last action
         if (now - st.session_state.last_action_time).seconds >= 60:
             st.session_state.last_action_time = now
             if seconds_in_minute >= 55:
@@ -444,11 +447,11 @@ else:
                     auth_response = json.loads(ws.recv())
                     
                     if auth_response.get('error'):
-                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ فشلت المصادقة: {auth_response['error']['message']}")
+                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Authentication failed: {auth_response['error']['message']}")
                     else:
                         if st.session_state.initial_balance is None:
                             st.session_state.initial_balance = get_balance(ws)
-                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 الرصيد الأولي: {st.session_state.initial_balance}")
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Initial Balance: {st.session_state.initial_balance}")
                             
                         req = {"ticks_history": "R_100", "end": "latest", "count": 70, "style": "ticks"}
                         ws.send(json.dumps(req))
@@ -464,7 +467,7 @@ else:
 
                                 provisional_decision, buy_count, sell_count, error_msg = analyse_data(candles_5ticks)
                                 
-                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📈 إشارات الشراء: {buy_count}، إشارات البيع: {sell_count}")
+                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📈 Buy signals: {buy_count}, Sell signals: {sell_count}")
 
                                 last_5_ticks = df_ticks.tail(5)
                                 last_5_signal = "Neutral"
@@ -480,75 +483,75 @@ else:
                                     final_signal = "Sell"
                                 
                                 if final_signal is not None and final_signal in ['Buy', 'Sell']:
-                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 الإشارة المؤقتة: {provisional_decision}، إشارة آخر 5 تيكات: {last_5_signal}")
-                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ الإشارة النهائية: {final_signal.upper()}")
-                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ وضع أمر {final_signal.upper()} بـ {st.session_state.current_amount}$")
+                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Provisional Signal: {provisional_decision}, Last 5 Ticks Signal: {last_5_signal}")
+                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Final Signal: {final_signal.upper()}")
+                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Placing a {final_signal.upper()} order with {st.session_state.current_amount}$")
                                     order_response = place_order(ws, st.session_state.user_token, "R_100", final_signal, st.session_state.current_amount)
                                     
                                     if 'buy' in order_response:
                                         st.session_state.is_trade_open = True
                                         st.session_state.trade_start_time = datetime.now()
                                         st.session_state.contract_id = order_response.get('buy', {}).get('contract_id')
-                                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ تم وضع الأمر. الرقم التعريفي: {st.session_state.contract_id}")
+                                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Order placed. Contract ID: {st.session_state.contract_id}")
                                     else:
-                                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ فشل الأمر: {order_response}")
+                                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Order failed: {order_response}")
                                 else:
-                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ لم يتم العثور على إشارة قوية. لم يتم وضع أي صفقة.")
+                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ No strong signal found. No trade placed.")
 
 
                 except Exception as e:
-                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ حدث خطأ أثناء دورة التداول: {e}")
+                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ An error occurred during the trading cycle: {e}")
                 finally:
                     if ws:
                         ws.close()
                 
                 st.rerun()
 
-    # --- عرض الصفحات بناءً على الحالة ---
+    # --- Display Pages based on state ---
     if st.session_state.page == 'inputs':
-        st.header("1. إعدادات البوت")
+        st.header("1. Bot Settings")
         
-        # حقل إدخال رمز API
-        st.session_state.user_token = st.text_input("أدخل رمز Deriv API الخاص بك:", type="password", key="api_token_input")
+        # API Token input field
+        st.session_state.user_token = st.text_input("Enter your Deriv API token:", type="password", key="api_token_input")
         
-        st.session_state.base_amount = st.number_input("المبلغ الأساسي", min_value=0.5, step=0.5, value=st.session_state.base_amount)
-        st.session_state.tp_target = st.number_input("الهدف (Take Profit)", min_value=1.0, step=1.0, value=st.session_state.tp_target)
+        st.session_state.base_amount = st.number_input("Base Amount", min_value=0.5, step=0.5, value=st.session_state.base_amount)
+        st.session_state.tp_target = st.number_input("Take Profit Target", min_value=1.0, step=1.0, value=st.session_state.tp_target)
         
-        start_button = st.button("بدء البوت")
-        stop_button = st.button("إيقاف البوت")
+        start_button = st.button("Start Bot")
+        stop_button = st.button("Stop Bot")
 
         if start_button:
             if not st.session_state.user_token:
-                st.error("يرجى إدخال رمز API صالح قبل بدء البوت.")
+                st.error("Please enter a valid API token before starting the bot.")
             else:
                 st.session_state.bot_running = True
                 st.session_state.current_amount = st.session_state.base_amount
                 st.session_state.consecutive_losses = 0
-                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 تم تشغيل البوت.")
+                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot has been started.")
                 st.rerun()
         
         if stop_button:
             st.session_state.bot_running = False
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 تم إيقاف البوت من قبل المستخدم.")
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 Bot stopped by user.")
             st.rerun()
             
     elif st.session_state.page == 'logs':
-        st.header("2. سجلات البوت المباشرة")
+        st.header("2. Live Bot Logs")
         with st.container(height=600):
-            st.text_area("السجلات", "\n".join(st.session_state.log_records), height=600)
+            st.text_area("Logs", "\n".join(st.session_state.log_records), height=600)
 
-    # --- تذييل مع أزرار التنقل ---
+    # --- Footer with Navigation Buttons ---
     st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("الإعدادات"):
+        if st.button("Settings"):
             st.session_state.page = 'inputs'
             st.rerun()
     with col2:
-        if st.button("السجلات"):
+        if st.button("Logs"):
             st.session_state.page = 'logs'
             st.rerun()
             
-    # إعادة تشغيل السكريبت بشكل دوري للتحقق من الوقت وتفعيل الدورة التالية
+    # Periodically rerun the script to check time and trigger next cycle
     time.sleep(1)
     st.rerun()
