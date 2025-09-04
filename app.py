@@ -76,6 +76,8 @@ if 'last_action_time' not in st.session_state:
     st.session_state.last_action_time = datetime.min
 if 'page' not in st.session_state:
     st.session_state.page = 'inputs'
+if 'is_analysing' not in st.session_state:
+    st.session_state.is_analysing = False
 
 # --- User IDs from file ---
 allowed_ids = set()
@@ -380,6 +382,22 @@ elif not st.session_state.user_token_exists:
             else:
                 st.error("Failed to save token. Please try again.")
 else:
+    # --- Status and Timer Display ---
+    status_placeholder = st.empty()
+    timer_placeholder = st.empty()
+
+    if st.session_state.bot_running:
+        status_placeholder.info("Analysing...")
+        
+        current_time = datetime.now()
+        time_elapsed = current_time - st.session_state.last_action_time
+        seconds_left = max(0, 60 - time_elapsed.seconds)
+        
+        timer_placeholder.metric("Next action in", f"{seconds_left}s")
+    else:
+        status_placeholder.empty()
+        timer_placeholder.empty()
+
     # --- Check for pending trade result ---
     if st.session_state.is_trade_open and st.session_state.trade_start_time:
         if datetime.now() >= st.session_state.trade_start_time + timedelta(seconds=70):
@@ -491,7 +509,7 @@ else:
                                 elif candle_signal == "Sell" and last_5_signal == "Sell":
                                     final_signal = "Sell"
                                 
-                                if final_signal in ['Buy', 'Sell']:
+                                if final_signal is not None and final_signal in ['Buy', 'Sell']:
                                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Candle Signal: {candle_signal}, Last 5 Ticks Signal: {last_5_signal}")
                                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Final Signal: {final_signal.upper()}")
                                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Placing a {final_signal.upper()} order with {st.session_state.current_amount}$")
@@ -504,6 +522,9 @@ else:
                                         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Order placed. ID: {st.session_state.contract_id}")
                                     else:
                                         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Order failed: {order_response}")
+                                else:
+                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ No strong signal found. No trade placed.")
+
 
                 except Exception as e:
                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error during trading cycle: {e}")
