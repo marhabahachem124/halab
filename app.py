@@ -327,7 +327,7 @@ if not st.session_state.is_authenticated:
         if login_button:
             if login(user_id_input):
                 st.success("Login successful!")
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error("Login failed. Please check your User ID.")
 elif not st.session_state.user_token_exists:
@@ -341,7 +341,7 @@ elif not st.session_state.user_token_exists:
             if save_api_token(st.session_state.user_id, api_token_input):
                 st.session_state.user_token = api_token_input
                 st.success("API Token saved successfully! Redirecting...")
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error("Failed to save token. Please try again.")
 else:
