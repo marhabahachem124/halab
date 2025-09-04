@@ -100,6 +100,9 @@ def login(user_id):
             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Login successful for User ID: {user_id}")
             return True
         else:
+            new_user = User(user_id=user_id, api_token=None)
+            db.add(new_user)
+            db.commit()
             st.session_state.is_authenticated = True
             st.session_state.user_id = user_id
             st.session_state.user_token_exists = False
@@ -119,12 +122,8 @@ def save_api_token(user_id, token):
             st.session_state.user_token_exists = True
             return True
         else:
-            new_user = User(user_id=user_id, api_token=token)
-            db.add(new_user)
-            db.commit()
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ New User ID and API Token saved.")
-            st.session_state.user_token_exists = True
-            return True
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ User ID not found.")
+            return False
     except Exception as e:
         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Failed to save API Token: {e}")
         db.rollback()
@@ -381,7 +380,6 @@ else:
     st.markdown("---")
     st.header("2. Live Logs")
     log_area = st.empty()
-    log_area.text_area("Logs", "\n".join(st.session_state.log_records), height=400, key="logs")
 
     if st.session_state.bot_running:
         
@@ -404,7 +402,6 @@ else:
         if ws:
             auth_response = authorize_deriv(ws, st.session_state.user_token)
             
-            # New check for successful authorization
             if auth_response.get('error'):
                  st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Authorization failed: {auth_response['error']['message']}")
                  st.session_state.bot_running = False
