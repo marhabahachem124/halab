@@ -211,11 +211,11 @@ def analyse_data(data):
                 signals.append("Buy" if ema10 >= ema20 else "Sell")
         
         # 8. On-Balance Volume (OBV)
-        obv = get_indicator_signal(lambda: ta.volume.OnBalanceVolumeIndicator(data['Close'], data['Volume']).on_balance_volume())
-        if obv is not None:
-            if obv > obv.shift(1).iloc[-1]: # If OBV is increasing
+        obv_series = ta.volume.OnBalanceVolumeIndicator(data['Close'], data['Volume']).on_balance_volume()
+        if not obv_series.empty and len(obv_series) > 1:
+            if obv_series.iloc[-1] > obv_series.iloc[-2]: # Compare last value with previous
                 signals.append("Buy")
-            elif obv < obv.shift(1).iloc[-1]: # If OBV is decreasing
+            elif obv_series.iloc[-1] < obv_series.iloc[-2]:
                 signals.append("Sell")
         
         # 9. Commodity Channel Index (CCI)
@@ -238,20 +238,20 @@ def analyse_data(data):
         sell_count = signals.count("Sell")
         total_indicators = len(signals)
         
-        final_decision = "Neutral"
+        provisional_decision = "Neutral"
         if total_indicators > 0:
             buy_percentage = (buy_count / total_indicators) * 100
             sell_percentage = (sell_count / total_indicators) * 100
             
             if buy_percentage >= 70:
-                final_decision = "Buy"
+                provisional_decision = "Buy"
             elif sell_percentage >= 70:
-                final_decision = "Sell"
+                provisional_decision = "Sell"
 
         log_message = f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Indicators: Buy={buy_count}, Sell={sell_count}, Total={total_indicators}"
         st.session_state.log_records.append(log_message)
         
-        return final_decision, buy_count, sell_count, None
+        return provisional_decision, buy_count, sell_count, None
     except Exception as e:
         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error in analyse_data: {e}")
         return None, 0, 0, f"An error occurred during analysis: {e}"
@@ -259,7 +259,6 @@ def analyse_data(data):
 def place_order(ws, proposal_id, amount):
     valid_amount = max(0.5, amount) 
     
-    # Correct request for a 'buy' order, using the proposal ID.
     req = {
         "buy": proposal_id,
         "price": valid_amount,
