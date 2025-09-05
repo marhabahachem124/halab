@@ -5,3 +5,4 @@ numpy
 ta
 requests
 SQLAlchemy
+psycopg2-binary
