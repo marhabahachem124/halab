@@ -174,7 +174,8 @@ def run_bot(user_id, api_token, log_queue, initial_balance, base_amount, tp_targ
                 remaining_seconds = 60 - now.second
                 log_queue.put(("countdown", remaining_seconds))
                 
-                if now.second >= 55:
+                # Check if 60 seconds have passed since the last trade attempt
+                if (now - last_action_time).total_seconds() >= 60:
                     last_action_time = now
                     ws = websocket.WebSocket()
                     ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
@@ -274,28 +275,30 @@ def run_bot(user_id, api_token, log_queue, initial_balance, base_amount, tp_targ
 # --- Streamlit UI ---
 st.title("KHOURYBOT - Automated Trading 🤖")
 
-# --- UI for user login/access ---
-user_id_from_db = get_or_create_device_id()
-if user_id_from_db not in st.session_state.all_users:
-    st.session_state.all_users.append(user_id_from_db)
+# Use a sidebar for user inputs
+with st.sidebar:
+    st.header("1. User Settings")
+    user_id_from_db = get_or_create_device_id()
+    if user_id_from_db not in st.session_state.all_users:
+        st.session_state.all_users.append(user_id_from_db)
 
-if not is_user_allowed(user_id_from_db):
-    st.warning("Your device is not activated. Please send this ID to the admin to activate it:")
-    st.code(user_id_from_db)
-    st.stop()
+    if not is_user_allowed(user_id_from_db):
+        st.warning("Your device is not activated. Please send this ID to the admin to activate it:")
+        st.code(user_id_from_db)
+        st.stop()
+    
+    user_id = st.text_input("User ID", user_id_from_db, disabled=True)
+    api_token = st.text_input("Your API Token", type="password")
+    base_amount = st.number_input("Base Trading Amount ($)", min_value=0.5, step=0.5, value=st.session_state.user_data.get(user_id, {}).get('base_amount', 0.5))
+    tp_target = st.number_input("Take Profit Target ($)", min_value=1.0, step=1.0, value=st.session_state.user_data.get(user_id, {}).get('tp_target', 5.0))
+    max_consecutive_losses = st.number_input("Max Consecutive Losses", min_value=1, step=1, value=st.session_state.user_data.get(user_id, {}).get('max_consecutive_losses', 5))
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        start_button = st.button("Start Bot", type="primary")
+    with col2:
+        stop_button = st.button("Stop Bot")
 
-st.header("1. User Settings")
-user_id = st.text_input("User ID", user_id_from_db, disabled=True)
-api_token = st.text_input("Your API Token", type="password")
-base_amount = st.number_input("Base Trading Amount ($)", min_value=0.5, step=0.5, value=st.session_state.user_data.get(user_id, {}).get('base_amount', 0.5))
-tp_target = st.number_input("Take Profit Target ($)", min_value=1.0, step=1.0, value=st.session_state.user_data.get(user_id, {}).get('tp_target', 5.0))
-max_consecutive_losses = st.number_input("Max Consecutive Losses", min_value=1, step=1, value=st.session_state.user_data.get(user_id, {}).get('max_consecutive_losses', 5))
-
-col1, col2 = st.columns(2)
-with col1:
-    start_button = st.button("Start Bot", type="primary")
-with col2:
-    stop_button = st.button("Stop Bot")
 
 # --- Logic for starting/stopping bot process ---
 if start_button:
