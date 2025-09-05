@@ -18,25 +18,39 @@ import streamlit.components.v1 as components
 # --- Setup Paths and State ---
 if 'user_data' not in st.session_state:
     st.session_state.user_data = {}
-if 'processes' not in st.session_state:
+if 'processes' in st.session_state:
+    # Check for orphaned processes and terminate them on app rerun
+    for pid in list(st.session_state.processes.keys()):
+        p = st.session_state.processes[pid]
+        if not p.is_alive():
+            p.join()
+            del st.session_state.processes[pid]
+else:
     st.session_state.processes = {}
+
 if 'page' not in st.session_state:
     st.session_state.page = 'inputs'
 if 'all_users' not in st.session_state:
     st.session_state.all_users = []
 
 # --- Database Setup (shared but accessed by each process) ---
+# NOTE: Replace with your actual PostgreSQL connection string
 DATABASE_URL = "postgresql://khourybot_db_user:wlVAwKwLhfzzH9HFsRMNo3IOo4dX6DYm@dpg-d2smi46r433s73frbbcg-a/khourybot_db"
-engine = sa.create_engine(DATABASE_URL)
-Session = sessionmaker(bind=engine)
-Base = declarative_base()
+try:
+    engine = sa.create_engine(DATABASE_URL)
+    Session = sessionmaker(bind=engine)
+    Base = declarative_base()
 
-class Device(Base):
-    __tablename__ = 'devices'
-    id = sa.Column(sa.Integer, primary_key=True)
-    device_id = sa.Column(sa.String, unique=True, nullable=False)
+    class Device(Base):
+        __tablename__ = 'devices'
+        id = sa.Column(sa.Integer, primary_key=True)
+        device_id = sa.Column(sa.String, unique=True, nullable=False)
 
-Base.metadata.create_all(engine)
+    Base.metadata.create_all(engine)
+except Exception as e:
+    st.error(f"Failed to connect to the database. Please check your DATABASE_URL. Error: {e}")
+    st.stop()
+
 
 # --- Licensing System ---
 ALLOWED_USERS_FILE = 'user_ids.txt'
@@ -61,18 +75,18 @@ def get_or_create_device_id():
 
 def is_user_allowed(user_id):
     try:
+        if not os.path.exists(ALLOWED_USERS_FILE):
+            st.error(f"Error: '{ALLOWED_USERS_FILE}' not found. Please create this file and add your user ID.")
+            return False
         with open(ALLOWED_USERS_FILE, 'r') as f:
             allowed_ids = {line.strip() for line in f}
-            if user_id in allowed_ids:
-                return True
-    except FileNotFoundError:
-        st.error(f"Error: '{ALLOWED_USERS_FILE}' not found. Please create this file.")
+            return user_id in allowed_ids
+    except Exception:
         return False
-    return False
 
 # --- Bot Logic (to be run in a separate process) ---
 def run_bot(user_id, api_token, log_queue, initial_balance, base_amount, tp_target, max_consecutive_losses):
-    log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 البوت شغال")
+    log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot is running")
 
     # Initialization inside the process
     current_amount = base_amount
@@ -242,7 +256,7 @@ def run_bot(user_id, api_token, log_queue, initial_balance, base_amount, tp_targ
                 auth_response = json.loads(ws.recv())
 
                 if auth_response.get('error'):
-                    log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ فشل المصادقة: {auth_response['error']['message']}")
+                    log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Authentication failed: {auth_response['error']['message']}")
                     ws.close()
                     continue
                 
@@ -250,7 +264,7 @@ def run_bot(user_id, api_token, log_queue, initial_balance, base_amount, tp_targ
                 if initial_balance is None:
                     initial_balance = get_balance(ws)
                     if initial_balance is not None:
-                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 الرصيد الحالي: {initial_balance:.2f}")
+                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Current Balance: {initial_balance:.2f}")
 
                 ticks_to_request = 350
                 ws.send(json.dumps({"ticks_history": "R_100", "end": "latest", "count": ticks_to_request, "style": "ticks"}))
@@ -305,10 +319,11 @@ def run_bot(user_id, api_token, log_queue, initial_balance, base_amount, tp_targ
                                 is_trade_open = True
                                 trade_start_time = datetime.now()
                                 contract_id = order_response['buy']['contract_id']
+                                log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Order placed for: {final_signal}")
                             elif 'error' in order_response:
-                                log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ فشل الطلب: {order_response['error']['message']}")
+                                log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Order failed: {order_response['error']['message']}")
                         else:
-                            log_queue.put(f"[{datetime.now().strftime('%H:%H:%S')}] ❌ فشل الاقتراح: {proposal_response.get('error', {}).get('message', 'خطأ غير معروف')}")
+                            log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Proposal failed: {proposal_response.get('error', {}).get('message', 'Unknown error')}")
                 ws.close()
             
             if is_trade_open and (datetime.now() >= trade_start_time + timedelta(seconds=70)):
@@ -321,7 +336,7 @@ def run_bot(user_id, api_token, log_queue, initial_balance, base_amount, tp_targ
                 if contract_info and contract_info.get('is_sold'):
                     profit = contract_info.get('profit', 0)
                     
-                    log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ⏳ انتظار النتيجة...")
+                    log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ⏳ Waiting for result...")
                     
                     if profit > 0:
                         consecutive_losses = 0
@@ -335,19 +350,19 @@ def run_bot(user_id, api_token, log_queue, initial_balance, base_amount, tp_targ
                     is_trade_open = False
                     current_balance = get_balance(ws)
                     if current_balance is not None:
-                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 الرصيد الحالي: {current_balance:.2f}")
-                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ عدد الصفقات الرابحة: {total_wins}, 🔴 عدد الصفقات الخاسرة: {total_losses}")
+                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Current Balance: {current_balance:.2f}")
+                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Total Wins: {total_wins}, 🔴 Total Losses: {total_losses}")
 
                     if tp_target and (current_balance - initial_balance) >= tp_target:
-                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 🤑 تم الوصول لهدف جني الأرباح ({tp_target}$)! توقف البوت.")
+                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 🤑 TP reached! ({tp_target}$)! Stopping bot.")
                         break
                     if consecutive_losses >= max_consecutive_losses:
-                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 تم الوصول لحد وقف الخسارة ({consecutive_losses} خسارة متتالية)! توقف البوت.")
+                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 SL reached! ({consecutive_losses} consecutive losses)! Stopping bot.")
                         break
                 ws.close()
                 
         except Exception as e:
-            log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ حدث خطأ: {e}")
+            log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ An error occurred: {e}")
         time.sleep(1)
 
 # --- Streamlit UI ---
@@ -359,30 +374,30 @@ if user_id_from_db not in st.session_state.all_users:
     st.session_state.all_users.append(user_id_from_db)
 
 if not is_user_allowed(user_id_from_db):
-    st.warning("جهازك غير مفعّل. الرجاء إرسال هذا المعرّف للمسؤول لتفعيله:")
+    st.warning("Your device is not activated. Please send this ID to the admin to activate it:")
     st.code(user_id_from_db)
     st.stop()
 
-st.header("1. إعدادات المستخدم")
-user_id = st.text_input("معرّف المستخدم", user_id_from_db, disabled=True)
-api_token = st.text_input("رمز API الخاص بك", type="password")
-base_amount = st.number_input("مبلغ التداول الأساسي ($)", min_value=0.5, step=0.5, value=st.session_state.user_data.get(user_id, {}).get('base_amount', 0.5))
-tp_target = st.number_input("هدف جني الأرباح ($)", min_value=1.0, step=1.0, value=st.session_state.user_data.get(user_id, {}).get('tp_target', 5.0))
-max_consecutive_losses = st.number_input("الحد الأقصى للخسائر المتتالية", min_value=1, step=1, value=st.session_state.user_data.get(user_id, {}).get('max_consecutive_losses', 5))
+st.header("1. User Settings")
+user_id = st.text_input("User ID", user_id_from_db, disabled=True)
+api_token = st.text_input("Your API Token", type="password")
+base_amount = st.number_input("Base Trading Amount ($)", min_value=0.5, step=0.5, value=st.session_state.user_data.get(user_id, {}).get('base_amount', 0.5))
+tp_target = st.number_input("Take Profit Target ($)", min_value=1.0, step=1.0, value=st.session_state.user_data.get(user_id, {}).get('tp_target', 5.0))
+max_consecutive_losses = st.number_input("Max Consecutive Losses", min_value=1, step=1, value=st.session_state.user_data.get(user_id, {}).get('max_consecutive_losses', 5))
 
 col1, col2 = st.columns(2)
 with col1:
-    start_button = st.button("بدء البوت", type="primary")
+    start_button = st.button("Start Bot", type="primary")
 with col2:
-    stop_button = st.button("إيقاف البوت")
+    stop_button = st.button("Stop Bot")
 
 # --- Logic for starting/stopping bot process ---
 if start_button:
     if not api_token:
-        st.error("الرجاء إدخال رمز API.")
+        st.error("Please enter your API token.")
     else:
         if user_id in st.session_state.processes and st.session_state.processes[user_id].is_alive():
-            st.warning(f"البوت قيد التشغيل بالفعل للمستخدم {user_id}.")
+            st.warning(f"Bot is already running for user {user_id}.")
         else:
             log_queue = mp.Queue()
             process = mp.Process(target=run_bot, args=(user_id, api_token, log_queue, None, base_amount, tp_target, max_consecutive_losses))
@@ -396,24 +411,24 @@ if start_button:
                 'tp_target': tp_target,
                 'max_consecutive_losses': max_consecutive_losses,
             }
-            st.success(f"تم بدء البوت للمستخدم {user_id}.")
+            st.success(f"Bot started for user {user_id}.")
 
 if stop_button:
     if user_id in st.session_state.processes and st.session_state.processes[user_id].is_alive():
         st.session_state.processes[user_id].terminate()
         st.session_state.processes[user_id].join()
         st.session_state.user_data[user_id]['status'] = 'Stopped'
-        st.warning(f"تم إيقاف البوت للمستخدم {user_id}.")
+        st.warning(f"Bot stopped for user {user_id}.")
     else:
-        st.info(f"لا يوجد بوت قيد التشغيل للمستخدم {user_id}.")
+        st.info(f"No bot is running for user {user_id}.")
 
 # --- Display Logs ---
-st.header("2. سجلات البوت")
+st.header("2. Bot Logs")
 if user_id in st.session_state.user_data:
     user_logs_data = st.session_state.user_data[user_id]
     if 'log_queue' in user_logs_data and user_logs_data['status'] == 'Running':
         while not user_logs_data['log_queue'].empty():
             user_logs_data['logs'].append(user_logs_data['log_queue'].get())
     
-    st.markdown(f"**الحالة:** {user_logs_data['status']}")
-    st.text_area(f"سجلات المستخدم {user_id}", "\n".join(user_logs_data['logs']), height=400)
+    st.markdown(f"**Status:** {user_logs_data['status']}")
+    st.text_area(f"Logs for user {user_id}", "\n".join(user_logs_data['logs']), height=400)
