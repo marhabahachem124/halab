@@ -170,10 +170,10 @@ def run_bot(user_id, api_token, log_queue, initial_balance, base_amount, tp_targ
             now = datetime.now()
             
             if not is_trade_open:
-                # Countdown logic
+                # Countdown logic - send a special message type to UI
                 remaining_seconds = 60 - now.second
-                log_queue.put(f"[{now.strftime('%H:%M:%S')}] ⏳ Waiting... ({remaining_seconds}s remaining)")
-
+                log_queue.put(("countdown", remaining_seconds))
+                
                 if now.second >= 55:
                     last_action_time = now
                     ws = websocket.WebSocket()
@@ -317,7 +317,8 @@ if start_button:
                 'tp_target': tp_target,
                 'max_consecutive_losses': max_consecutive_losses,
                 'wins': 0,
-                'losses': 0
+                'losses': 0,
+                'countdown': 0 # Initialize countdown variable
             }
             st.success(f"Bot started for user {user_id}.")
 
@@ -336,6 +337,9 @@ st.header("2. Bot Logs")
 if user_id in st.session_state.user_data:
     user_logs_data = st.session_state.user_data[user_id]
     
+    # Create an empty placeholder for the countdown
+    countdown_placeholder = st.empty()
+
     # Update stats and logs from the queue
     if 'log_queue' in user_logs_data and user_logs_data['status'] == 'Running':
         while not user_logs_data['log_queue'].empty():
@@ -343,9 +347,14 @@ if user_id in st.session_state.user_data:
             if isinstance(log_item, tuple) and log_item[0] == "stats":
                 user_logs_data['wins'] = log_item[1]
                 user_logs_data['losses'] = log_item[2]
+            elif isinstance(log_item, tuple) and log_item[0] == "countdown":
+                user_logs_data['countdown'] = log_item[1]
             else:
                 user_logs_data['logs'].append(log_item)
     
+    # Display the countdown using the placeholder
+    countdown_placeholder.text(f"⏳ Waiting... ({user_logs_data.get('countdown', 0)}s remaining)")
+
     # Display stats at the top of the logs section
     st.subheader("Trading Statistics")
     col_wins, col_losses = st.columns(2)
