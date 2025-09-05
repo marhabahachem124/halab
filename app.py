@@ -258,7 +258,8 @@ def analyse_data(data):
         return None, 0, 0, f"An error occurred during analysis: {e}"
 
 def place_order(ws, proposal_id, amount):
-    valid_amount = max(0.5, amount) 
+    # Round the amount to 2 decimal places as requested
+    valid_amount = round(max(0.5, amount), 2)
     
     req = {
         "buy": proposal_id,
@@ -423,17 +424,17 @@ else:
                         # Final decision based on all three conditions
                         final_signal = "Neutral"
                         if provisional_decision == "Buy" and last_5_signal == "Buy" and last_60_signal == "Buy":
-                            final_signal = "Buy"
+                            final_signal = "Sell" # INVERTED
                         elif provisional_decision == "Sell" and last_5_signal == "Sell" and last_60_signal == "Sell":
-                            final_signal = "Sell"
+                            final_signal = "Buy" # INVERTED
 
                         if final_signal in ['Buy', 'Sell']:
-                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Entering a {final_signal.upper()} trade with {st.session_state.current_amount}$")
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Entering a {final_signal.upper()} trade with {round(st.session_state.current_amount, 2)}$")
                             
                             # First, request a proposal to get the proposal ID.
                             proposal_req = {
                                 "proposal": 1,
-                                "amount": st.session_state.current_amount,
+                                "amount": round(st.session_state.current_amount, 2),
                                 "basis": "stake",
                                 "contract_type": "CALL" if final_signal == 'Buy' else "PUT",
                                 "currency": "USD",
@@ -455,7 +456,7 @@ else:
                                     st.session_state.is_trade_open = True
                                     st.session_state.trade_start_time = datetime.now()
                                     st.session_state.contract_id = order_response['buy']['contract_id']
-                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Order placed. Contract ID: {st.session_state.contract_id}")
+                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Order placed.")
                                 elif 'error' in order_response:
                                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Order failed: {order_response['error']['message']}")
                                 else:
@@ -509,16 +510,20 @@ else:
                             next_bet = st.session_state.current_amount * 2.2
                             st.session_state.current_amount = max(st.session_state.base_amount, next_bet)
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💔 Loss! Loss: {profit:.2f}$")
-                        else: # Profit is 0, so no change in amount
+                        else: # Profit is 0, so no change in amount or consecutive losses
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚪ No change. Profit/Loss: 0$")
                             
                         st.session_state.is_trade_open = False
                         
                         current_balance = get_balance(ws)
                         if current_balance is not None:
-                            if st.session_state.initial_balance is None:
-                                st.session_state.initial_balance = current_balance
-                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 New Balance: {current_balance}")
+                            # Find and remove the last balance log message
+                            balance_logs = [l for l in st.session_state.log_records if '💰' in l]
+                            if balance_logs:
+                                last_balance_log = balance_logs[-1]
+                                st.session_state.log_records = [l for l in st.session_state.log_records if l != last_balance_log]
+                                
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Current Balance: {current_balance:.2f}")
                             
                             if st.session_state.tp_target and (current_balance - st.session_state.initial_balance) >= st.session_state.tp_target:
                                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🤑 Take Profit target ({st.session_state.tp_target}$) reached! Bot stopped.")
