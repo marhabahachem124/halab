@@ -25,7 +25,7 @@ Session = sessionmaker(bind=engine)
 Base = declarative_base()
 
 class Device(Base):
-    _tablename_ = 'devices'
+    __tablename__ = 'devices'
     id = sa.Column(sa.Integer, primary_key=True)
     device_id = sa.Column(sa.String, unique=True, nullable=False)
 
@@ -156,7 +156,7 @@ def analyse_data(data):
                     return result[0].iloc[-1]
                 return None
             except Exception as e:
-                #st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error in indicator: {indicator_func._name_} - {e}")
+                #st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error in indicator: {indicator_func.__name__} - {e}")
                 return None
 
         # 1. RSI logic
@@ -286,10 +286,10 @@ def check_contract_status(ws, contract_id):
         if response_data.get('msg_type') == 'proposal_open_contract':
             return response_data['proposal_open_contract']
         else:
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠ Unexpected response type for contract status: {response_data.get('msg_type')}. Response: {response_data}")
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Unexpected response type for contract status: {response_data.get('msg_type')}. Response: {response_data}")
             return None
     except websocket.WebSocketTimeoutException:
-        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠ Timeout waiting for contract info for ID {contract_id}.")
+        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Timeout waiting for contract info for ID {contract_id}.")
         return None
     except Exception as e:
         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error checking contract status for ID {contract_id}: {e}")
@@ -420,16 +420,17 @@ else:
                                 last_60_signal = "Buy"
                             elif last_60_ticks['price'].iloc[-1] < last_60_ticks['price'].iloc[0]:
                                 last_60_signal = "Sell"
-                            
+                                
                         # Final decision based on all three conditions
+                        # Adjusted based on user's last request: reverse the 60-tick direction
                         final_signal = "Neutral"
-                        if provisional_decision == "Buy" and last_5_signal == "Buy" and last_60_signal == "Buy":
-                            final_signal = "Sell" # INVERTED
-                        elif provisional_decision == "Sell" and last_5_signal == "Sell" and last_60_signal == "Sell":
-                            final_signal = "Buy" # INVERTED
+                        if provisional_decision == "Buy" and last_5_signal == "Buy" and last_60_signal == "Sell":
+                            final_signal = "Buy" # Now it's a BUY trade when last_60_signal is SELL
+                        elif provisional_decision == "Sell" and last_5_signal == "Sell" and last_60_signal == "Buy":
+                            final_signal = "Sell" # Now it's a SELL trade when last_60_signal is BUY
 
                         if final_signal in ['Buy', 'Sell']:
-                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡ Entering a {final_signal.upper()} trade with {round(st.session_state.current_amount, 2)}$")
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Entering a {final_signal.upper()} trade with {round(st.session_state.current_amount, 2)}$")
                             
                             # First, request a proposal to get the proposal ID.
                             proposal_req = {
@@ -460,7 +461,7 @@ else:
                                 elif 'error' in order_response:
                                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Order failed: {order_response['error']['message']}")
                                 else:
-                                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Unexpected order response: {order_response}")
+                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Unexpected order response: {order_response}")
                             else:
                                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Proposal failed: {proposal_response.get('error', {}).get('message', 'Unknown error')}")
                     
