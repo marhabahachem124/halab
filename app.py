@@ -66,8 +66,10 @@ if 'last_action_time' not in st.session_state:
     st.session_state.last_action_time = datetime.min
 if 'page' not in st.session_state:
     st.session_state.page = 'inputs'
-if 'is_analysing' not in st.session_state:
-    st.session_state.is_analysing = False
+if 'total_wins' not in st.session_state:
+    st.session_state.total_wins = 0
+if 'total_losses' not in st.session_state:
+    st.session_state.total_losses = 0
 
 # --- License Check and Device ID Generation ---
 def get_or_create_device_id():
@@ -139,7 +141,6 @@ def analyse_data(data):
         # We need a minimum number of candles for the indicators to work.
         required_candles = 50
         if data.empty or len(data) < required_candles:
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Warning: Insufficient data for analysis (expected {required_candles} candles, got {len(data)}).")
             return "Neutral", 0, 0, "Insufficient data"
 
         data = data.tail(required_candles).copy()
@@ -155,7 +156,7 @@ def analyse_data(data):
                     return result[0].iloc[-1]
                 return None
             except Exception as e:
-                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error in indicator: {indicator_func.__name__} - {e}")
+                #st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error in indicator: {indicator_func.__name__} - {e}")
                 return None
 
         # 1. RSI logic
@@ -248,8 +249,8 @@ def analyse_data(data):
             elif sell_percentage >= 70:
                 provisional_decision = "Sell"
 
-        log_message = f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Indicators: Buy={buy_count}, Sell={sell_count}, Total={total_indicators}"
-        st.session_state.log_records.append(log_message)
+        # Removed: log_message = f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Indicators: Buy={buy_count}, Sell={sell_count}, Total={total_indicators}"
+        # Removed: st.session_state.log_records.append(log_message)
         
         return provisional_decision, buy_count, sell_count, None
     except Exception as e:
@@ -381,7 +382,7 @@ else:
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Initial Balance: {st.session_state.initial_balance}")
                         else:
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Failed to retrieve initial balance.")
-                            
+                    
                     # Request 350 ticks for 50 candles (350/7 = 50)
                     ticks_to_request = 350 
                     req = {"ticks_history": "R_100", "end": "latest", "count": ticks_to_request, "style": "ticks"}
@@ -427,7 +428,7 @@ else:
                             final_signal = "Sell"
 
                         if final_signal in ['Buy', 'Sell']:
-                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Final Signal: {final_signal.upper()}")
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Entering a {final_signal.upper()} trade with {st.session_state.current_amount}$")
                             
                             # First, request a proposal to get the proposal ID.
                             proposal_req = {
@@ -446,8 +447,6 @@ else:
                             
                             if 'proposal' in proposal_response:
                                 proposal_id = proposal_response['proposal']['id']
-                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Proposal received. ID: {proposal_id}")
-                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Placing a {final_signal.upper()} order with {st.session_state.current_amount}$")
                                 
                                 # Now, place the order using the proposal ID.
                                 order_response = place_order(ws, proposal_id, st.session_state.current_amount)
@@ -463,8 +462,6 @@ else:
                                      st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Unexpected order response: {order_response}")
                             else:
                                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Proposal failed: {proposal_response.get('error', {}).get('message', 'Unknown error')}")
-                        else:
-                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ No strong signal found for trade.")
                     
                     else:
                         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error: Could not get tick history data or data is empty.")
@@ -484,7 +481,6 @@ else:
     # --- Check Pending Trade Result ---
     if st.session_state.is_trade_open and st.session_state.trade_start_time:
         if datetime.now() >= st.session_state.trade_start_time + timedelta(seconds=70): 
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⏱️ Checking trade result for contract ID: {st.session_state.contract_id}...")
             ws = None
             try:
                 ws = websocket.WebSocket()
@@ -501,17 +497,21 @@ else:
                     contract_info = check_contract_status(ws, st.session_state.contract_id)
                     if contract_info and contract_info.get('is_sold'):
                         profit = contract_info.get('profit', 0)
-                        is_win = profit > 0
+                        payout = contract_info.get('payout', 0)
                         
-                        if is_win:
+                        if payout > 0: # This is a win
+                            real_profit = payout - st.session_state.current_amount
                             st.session_state.consecutive_losses = 0
+                            st.session_state.total_wins += 1
                             st.session_state.current_amount = st.session_state.base_amount
-                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🎉 Win! Profit: {profit}")
-                        else:
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🎉 Win! Profit: {real_profit}")
+                        else: # This is a loss
+                            real_loss = -st.session_state.current_amount
                             st.session_state.consecutive_losses += 1
-                            next_bet = st.session_state.current_amount * 2.2 
+                            st.session_state.total_losses += 1
+                            next_bet = st.session_state.current_amount * 2.2
                             st.session_state.current_amount = max(st.session_state.base_amount, next_bet)
-                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💔 Loss! Loss: {profit}")
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💔 Loss! Loss: {real_loss}")
                         
                         st.session_state.is_trade_open = False
                         
@@ -573,6 +573,8 @@ else:
                 st.session_state.bot_running = True
                 st.session_state.current_amount = st.session_state.base_amount
                 st.session_state.consecutive_losses = 0
+                st.session_state.total_wins = 0
+                st.session_state.total_losses = 0
                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot has been started.")
                 st.rerun()
                 
@@ -584,6 +586,7 @@ else:
             
     elif st.session_state.page == 'logs':
         st.header("2. Live Bot Logs")
+        st.markdown(f"**Wins: {st.session_state.total_wins}** | **Losses: {st.session_state.total_losses}**")
         with st.container(height=600):
             st.text_area("Logs", "\n".join(st.session_state.log_records), height=600, key="logs_textarea")
             # JavaScript to auto-scroll the textarea to the bottom
