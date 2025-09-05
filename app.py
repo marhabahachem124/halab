@@ -357,17 +357,18 @@ else:
         
         # Countdown Timer (Displays remaining time until the next analysis)
         now = datetime.now()
-        remaining_seconds = 60 - (now - st.session_state.last_action_time).total_seconds()
+        seconds_in_minute = now.second
+        remaining_seconds = 60 - seconds_in_minute
         status_placeholder = st.empty()
         timer_placeholder = st.empty()
-        
-        if not st.session_state.is_trade_open and remaining_seconds > 0:
+
+        if not st.session_state.is_trade_open and seconds_in_minute < 55:
             status_placeholder.info("Analyzing soon...")
-            timer_placeholder.metric("Next action in", f"{int(remaining_seconds)}s")
+            timer_placeholder.metric("Next action in", f"{remaining_seconds}s")
         else:
             status_placeholder.empty()
             timer_placeholder.empty()
-            
+
         # Check for a pending trade result first
         if st.session_state.is_trade_open and st.session_state.trade_start_time and (now >= st.session_state.trade_start_time + timedelta(seconds=70)):
             ws = None
@@ -416,8 +417,8 @@ else:
                 st.session_state.contract_id = None
             st.rerun()
 
-        # Place a new trade if no trade is open and the cooldown has passed
-        if not st.session_state.is_trade_open and (now - st.session_state.last_action_time).total_seconds() >= 60:
+        # Place a new trade if no trade is open and it's the right time
+        if not st.session_state.is_trade_open and (seconds_in_minute >= 55 or (now - st.session_state.last_action_time).total_seconds() >= 60):
             st.session_state.last_action_time = now
             
             ws = None
@@ -475,12 +476,10 @@ else:
                                 last_60_signal = "Sell"
                                 
                         final_signal = "Neutral"
-                        # --- START OF MODIFIED LOGIC ---
                         if provisional_decision == "Buy" and last_5_signal == "Buy" and last_60_signal == "Sell":
                             final_signal = "Buy"
                         elif provisional_decision == "Sell" and last_5_signal == "Sell" and last_60_signal == "Buy":
                             final_signal = "Sell"
-                        # --- END OF MODIFIED LOGIC ---
 
                         if final_signal in ['Buy', 'Sell']:
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Entering a {final_signal.upper()} trade with {round(st.session_state.current_amount, 2)}$")
