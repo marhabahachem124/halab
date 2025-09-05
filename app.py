@@ -131,7 +131,7 @@ def run_bot(user_id, api_token, log_queue, initial_balance, base_amount, tp_targ
             except Exception:
                 return None
         
-        rsi_value = get_indicator_signal(lambda: ta.momentum.RSIIndicator(data['Close']).rsi())
+        rsi_value = get_indicator_signal(lambda: ta.momentum.RSIIndicator(data['Close'], window=14).rsi())
         if rsi_value is not None:
             signals.append("Buy" if rsi_value >= 50 else "Sell")
         
@@ -233,7 +233,7 @@ def run_bot(user_id, api_token, log_queue, initial_balance, base_amount, tp_targ
         return ohlc_df
 
     def place_order(ws, proposal_id, amount):
-        valid_amount = round(max(0.5, amount), 2)
+        valid_amount = round(amount, 2)
         req = {"buy": proposal_id, "price": valid_amount}
         try:
             ws.send(json.dumps(req))
@@ -264,7 +264,7 @@ def run_bot(user_id, api_token, log_queue, initial_balance, base_amount, tp_targ
                 if initial_balance is None:
                     initial_balance = get_balance(ws)
                     if initial_balance is not None:
-                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Current Balance: {initial_balance:.2f}")
+                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Initial Balance: {initial_balance:.2f}")
 
                 ticks_to_request = 350
                 ws.send(json.dumps({"ticks_history": "R_100", "end": "latest", "count": ticks_to_request, "style": "ticks"}))
