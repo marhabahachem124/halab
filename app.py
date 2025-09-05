@@ -136,74 +136,61 @@ def ticks_to_ohlc_by_count(ticks_df, tick_count):
 
 def analyse_data(data):
     try:
-        # Ensure we have at least 50 candles for analysis
+        # We need a minimum number of candles for the indicators to work.
         required_candles = 50
         if data.empty or len(data) < required_candles:
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Warning: Insufficient data for full analysis (expected {required_candles} candles, got {len(data)}).")
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Warning: Insufficient data for analysis (expected {required_candles} candles, got {len(data)}).")
             return "Neutral", 0, 0, "Insufficient data"
 
         data = data.tail(required_candles).copy()
         signals = []
         
         # Helper function to safely get a signal and handle errors
-        def get_indicator_signal(indicator_func, *args, default_signal="Neutral"):
+        def get_indicator_signal(indicator_func, default_signal="Neutral"):
             try:
-                result = indicator_func(*args)
-                if isinstance(result, pd.Series):
-                    if not result.empty:
-                        return result.iloc[-1]
-                elif isinstance(result, tuple) and len(result) > 0 and isinstance(result[0], pd.Series):
-                    if not result[0].empty:
-                        return result[0].iloc[-1]
-                # Default to None if not a valid series or tuple of series
+                result = indicator_func()
+                if isinstance(result, pd.Series) and not result.empty:
+                    return result.iloc[-1]
+                elif isinstance(result, tuple) and len(result) > 0 and isinstance(result[0], pd.Series) and not result[0].empty:
+                    return result[0].iloc[-1]
                 return None
             except Exception as e:
                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error in indicator: {indicator_func.__name__} - {e}")
                 return None
 
-        # RSI logic
-        rsi_value = get_indicator_signal(ta.momentum.RSIIndicator(data['Close']).rsi)
+        # 1. RSI logic
+        rsi_value = get_indicator_signal(lambda: ta.momentum.RSIIndicator(data['Close']).rsi())
         if rsi_value is not None:
             signals.append("Buy" if rsi_value >= 50 else "Sell")
-        else:
-            signals.append("Neutral")
-
-        # Stochastic logic
-        stoch_value = get_indicator_signal(ta.momentum.StochasticOscillator(data['High'], data['Low'], data['Close']).stoch)
+        
+        # 2. Stochastic logic
+        stoch_value = get_indicator_signal(lambda: ta.momentum.StochasticOscillator(data['High'], data['Low'], data['Close']).stoch())
         if stoch_value is not None:
             signals.append("Buy" if stoch_value >= 50 else "Sell")
-        else:
-            signals.append("Neutral")
-
-        # ROC logic
-        roc_value = get_indicator_signal(ta.momentum.ROCIndicator(data['Close']).roc)
+        
+        # 3. ROC logic
+        roc_value = get_indicator_signal(lambda: ta.momentum.ROCIndicator(data['Close']).roc())
         if roc_value is not None:
             signals.append("Buy" if roc_value >= 0 else "Sell")
-        else:
-            signals.append("Neutral")
         
-        # ADX logic
+        # 4. ADX logic
         adx_indicator = ta.trend.ADXIndicator(data['High'], data['Low'], data['Close'])
-        adx_pos_val = get_indicator_signal(adx_indicator.adx_pos)
-        adx_neg_val = get_indicator_signal(adx_indicator.adx_neg)
+        adx_pos_val = get_indicator_signal(lambda: adx_indicator.adx_pos())
+        adx_neg_val = get_indicator_signal(lambda: adx_indicator.adx_neg())
         if adx_pos_val is not None and adx_neg_val is not None:
             signals.append("Buy" if adx_pos_val >= adx_neg_val else "Sell")
-        else:
-            signals.append("Neutral")
         
-        # MACD logic
+        # 5. MACD logic
         macd_indicator = ta.trend.MACD(data['Close'])
-        macd_val = get_indicator_signal(macd_indicator.macd)
-        macd_signal_val = get_indicator_signal(macd_indicator.macd_signal)
+        macd_val = get_indicator_signal(lambda: macd_indicator.macd())
+        macd_signal_val = get_indicator_signal(lambda: macd_indicator.macd_signal())
         if macd_val is not None and macd_signal_val is not None:
             signals.append("Buy" if macd_val >= macd_signal_val else "Sell")
-        else:
-            signals.append("Neutral")
         
-        # Ichimoku logic
+        # 6. Ichimoku logic
         ichimoku_indicator = ta.trend.IchimokuIndicator(data['High'], data['Low'])
-        ichimoku_a_val = get_indicator_signal(ichimoku_indicator.ichimoku_a)
-        ichimoku_b_val = get_indicator_signal(ichimoku_indicator.ichimoku_b)
+        ichimoku_a_val = get_indicator_signal(lambda: ichimoku_indicator.ichimoku_a())
+        ichimoku_b_val = get_indicator_signal(lambda: ichimoku_indicator.ichimoku_b())
         last_close_ichimoku = data.iloc[-1]['Close']
         if ichimoku_a_val is not None and ichimoku_b_val is not None:
             if last_close_ichimoku > max(ichimoku_a_val, ichimoku_b_val):
@@ -211,43 +198,57 @@ def analyse_data(data):
             elif last_close_ichimoku < min(ichimoku_a_val, ichimoku_b_val):
                 signals.append("Sell")
             else:
-                tenkan_sen = get_indicator_signal(lambda: (data['High'].rolling(9).max() + data['Low'].rolling(9).min()) / 2)
-                if tenkan_sen is not None:
-                    signals.append("Buy" if last_close_ichimoku > tenkan_sen else "Sell")
-                else:
-                    signals.append("Neutral")
-        else:
-            signals.append("Neutral")
+                tenkan_sen = (data['High'].rolling(window=9).max() + data['Low'].rolling(window=9).min()) / 2
+                tenkan_sen_val = get_indicator_signal(lambda: tenkan_sen)
+                if tenkan_sen_val is not None:
+                    signals.append("Buy" if last_close_ichimoku > tenkan_sen_val else "Sell")
         
-        # EMA logic
+        # 7. EMA 10/20 Crossover logic
         if len(data) >= 20: # EMA needs at least 20 periods
-            ema10 = get_indicator_signal(ta.trend.EMAIndicator(data['Close'], window=10).ema_indicator)
-            ema20 = get_indicator_signal(ta.trend.EMAIndicator(data['Close'], window=20).ema_indicator)
+            ema10 = get_indicator_signal(lambda: ta.trend.EMAIndicator(data['Close'], window=10).ema_indicator())
+            ema20 = get_indicator_signal(lambda: ta.trend.EMAIndicator(data['Close'], window=20).ema_indicator())
             if ema10 is not None and ema20 is not None:
                 signals.append("Buy" if ema10 >= ema20 else "Sell")
-                last_close = data.iloc[-1]['Close']
-                if last_close >= ema20 and last_close >= ema10:
-                    signals.append("Buy")
-                elif last_close < ema20 and last_close < ema10:
-                    signals.append("Sell")
-                else:
-                    signals.append("Buy" if last_close > ema20 else "Sell")
-            else:
-                signals.append("Neutral")
-        else:
-            signals.append("Neutral")
+        
+        # 8. On-Balance Volume (OBV)
+        obv = get_indicator_signal(lambda: ta.volume.OnBalanceVolumeIndicator(data['Close'], data['Volume']).on_balance_volume())
+        if obv is not None:
+            if obv > obv.shift(1).iloc[-1]: # If OBV is increasing
+                signals.append("Buy")
+            elif obv < obv.shift(1).iloc[-1]: # If OBV is decreasing
+                signals.append("Sell")
+        
+        # 9. Commodity Channel Index (CCI)
+        cci_value = get_indicator_signal(lambda: ta.trend.CCIIndicator(data['High'], data['Low'], data['Close']).cci())
+        if cci_value is not None:
+            if cci_value > 0:
+                signals.append("Buy")
+            elif cci_value < 0:
+                signals.append("Sell")
+        
+        # 10. Awesome Oscillator (AO)
+        ao_value = get_indicator_signal(lambda: ta.momentum.AwesomeOscillatorIndicator(data['High'], data['Low']).awesome_oscillator())
+        if ao_value is not None:
+            if ao_value > 0:
+                signals.append("Buy")
+            elif ao_value < 0:
+                signals.append("Sell")
 
         buy_count = signals.count("Buy")
         sell_count = signals.count("Sell")
-        neutral_count = signals.count("Neutral")
+        total_indicators = len(signals)
         
         final_decision = "Neutral"
-        if buy_count > sell_count:
-            final_decision = "Buy"
-        elif sell_count > buy_count:
-            final_decision = "Sell"
-        
-        log_message = f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Indicators: Buy={buy_count}, Sell={sell_count}, Neutral={neutral_count}"
+        if total_indicators > 0:
+            buy_percentage = (buy_count / total_indicators) * 100
+            sell_percentage = (sell_count / total_indicators) * 100
+            
+            if buy_percentage >= 70:
+                final_decision = "Buy"
+            elif sell_percentage >= 70:
+                final_decision = "Sell"
+
+        log_message = f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Indicators: Buy={buy_count}, Sell={sell_count}, Total={total_indicators}"
         st.session_state.log_records.append(log_message)
         
         return final_decision, buy_count, sell_count, None
@@ -255,16 +256,13 @@ def analyse_data(data):
         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error in analyse_data: {e}")
         return None, 0, 0, f"An error occurred during analysis: {e}"
 
-def place_order(ws, api_token, symbol, action, amount):
+def place_order(ws, proposal_id, amount):
     valid_amount = max(0.5, amount) 
     
+    # Correct request for a 'buy' order, using the proposal ID.
     req = {
-        "buy": 1,
+        "buy": proposal_id,
         "price": valid_amount,
-        "type": "CALL" if action == 'buy' else "PUT",
-        "duration": 1,
-        "duration_unit": "m",
-        "symbol": symbol
     }
     try:
         ws.send(json.dumps(req))
@@ -281,7 +279,6 @@ def check_contract_status(ws, contract_id):
     req = {"proposal_open_contract": 1, "contract_id": contract_id, "subscribe": 1}
     try:
         ws.send(json.dumps(req))
-        # Set a timeout for receiving the response
         response = ws.recv() 
         response_data = json.loads(response)
 
@@ -347,7 +344,6 @@ else:
         if not st.session_state.is_trade_open:
             status_placeholder.info("Analyzing...")
             now = datetime.now()
-            # Calculate time until the next minute starts, minus a small buffer
             next_minute = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
             seconds_left = max(0, (next_minute - now).total_seconds() - 5)
             timer_placeholder.metric("Next action in", f"{int(seconds_left)}s")
@@ -363,19 +359,16 @@ else:
         now = datetime.now()
         seconds_in_minute = now.second
         
-        # Execute trading logic only if it's time to act (near the minute mark)
         if (now - st.session_state.last_action_time).total_seconds() >= 60 and seconds_in_minute >= 55:
             st.session_state.last_action_time = now
             
             ws = None
             try:
                 ws = websocket.WebSocket()
-                # Use connect with a timeout to prevent hanging
                 ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10) 
                 
                 auth_req = {"authorize": st.session_state.user_token}
                 ws.send(json.dumps(auth_req))
-                # Expect authentication response quickly
                 auth_response = json.loads(ws.recv()) 
                 
                 if auth_response.get('error'):
@@ -390,7 +383,7 @@ else:
                         else:
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Failed to retrieve initial balance.")
                             
-                    # Request ticks history: 50 candles * 7 ticks/candle = 350 ticks
+                    # Request 350 ticks for 50 candles (350/7 = 50)
                     ticks_to_request = 350 
                     req = {"ticks_history": "R_100", "end": "latest", "count": ticks_to_request, "style": "ticks"}
                     ws.send(json.dumps(req))
@@ -401,36 +394,64 @@ else:
                         timestamps = tick_data['history']['times']
                         df_ticks = pd.DataFrame({'timestamp': timestamps, 'price': ticks})
                         
-                        # Convert ticks to OHLC candles (5 ticks per candle)
-                        ticks_per_candle = 5
-                        if len(df_ticks) >= ticks_per_candle: # Ensure enough ticks for at least one candle
-                            candles_df = ticks_to_ohlc_by_count(df_ticks, ticks_per_candle)
+                        ticks_per_candle = 7
+                        candles_df = ticks_to_ohlc_by_count(df_ticks, ticks_per_candle)
+                        
+                        provisional_decision, buy_count, sell_count, error_msg = analyse_data(candles_df)
+                        
+                        if error_msg:
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Analysis Error: {error_msg}")
+                        
+                        # New check: Last 5 ticks direction
+                        last_5_ticks = df_ticks.tail(5)
+                        last_5_signal = "Neutral"
+                        if len(last_5_ticks) == 5:
+                            if last_5_ticks['price'].iloc[-1] > last_5_ticks['price'].iloc[0]:
+                                last_5_signal = "Buy"
+                            elif last_5_ticks['price'].iloc[-1] < last_5_ticks['price'].iloc[0]:
+                                last_5_signal = "Sell"
+                        
+                        # New check: Last 60 ticks direction
+                        last_60_ticks = df_ticks.tail(60)
+                        last_60_signal = "Neutral"
+                        if len(last_60_ticks) == 60:
+                            if last_60_ticks['price'].iloc[-1] > last_60_ticks['price'].iloc[0]:
+                                last_60_signal = "Buy"
+                            elif last_60_ticks['price'].iloc[-1] < last_60_ticks['price'].iloc[0]:
+                                last_60_signal = "Sell"
                             
-                            provisional_decision, buy_count, sell_count, error_msg = analyse_data(candles_df)
+                        # Final decision based on all three conditions
+                        final_signal = "Neutral"
+                        if provisional_decision == "Buy" and last_5_signal == "Buy" and last_60_signal == "Buy":
+                            final_signal = "Buy"
+                        elif provisional_decision == "Sell" and last_5_signal == "Sell" and last_60_signal == "Sell":
+                            final_signal = "Sell"
+
+                        if final_signal in ['Buy', 'Sell']:
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Final Signal: {final_signal.upper()}")
                             
-                            if error_msg:
-                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Analysis Error: {error_msg}")
+                            # First, request a proposal to get the proposal ID.
+                            proposal_req = {
+                                "proposal": 1,
+                                "amount": st.session_state.current_amount,
+                                "basis": "stake",
+                                "contract_type": "CALL" if final_signal == 'Buy' else "PUT",
+                                "currency": "USD",
+                                "duration": 1,
+                                "duration_unit": "m",
+                                "symbol": "R_100",
+                                "passthrough": {"action": final_signal}
+                            }
+                            ws.send(json.dumps(proposal_req))
+                            proposal_response = json.loads(ws.recv())
                             
-                            # Get direction from last 60 ticks
-                            last_60_ticks = df_ticks.tail(60)
-                            last_60_signal = "Neutral"
-                            if len(last_60_ticks) >= 2:
-                                if last_60_ticks['price'].iloc[-1] > last_60_ticks['price'].iloc[0]:
-                                    last_60_signal = "Buy"
-                                elif last_60_ticks['price'].iloc[-1] < last_60_ticks['price'].iloc[0]:
-                                    last_60_signal = "Sell"
-                                
-                            final_signal = "Neutral"
-                            # Logic: Provisional decision must match 60-tick direction for a trade
-                            if provisional_decision == "Buy" and last_60_signal == "Buy":
-                                final_signal = "Buy"
-                            elif provisional_decision == "Sell" and last_60_signal == "Sell":
-                                final_signal = "Sell"
-                            
-                            if final_signal in ['Buy', 'Sell']:
-                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Final Signal: {final_signal.upper()}")
+                            if 'proposal' in proposal_response:
+                                proposal_id = proposal_response['proposal']['id']
+                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Proposal received. ID: {proposal_id}")
                                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Placing a {final_signal.upper()} order with {st.session_state.current_amount}$")
-                                order_response = place_order(ws, st.session_state.user_token, "R_100", final_signal, st.session_state.current_amount)
+                                
+                                # Now, place the order using the proposal ID.
+                                order_response = place_order(ws, proposal_id, st.session_state.current_amount)
                                 
                                 if 'buy' in order_response and 'contract_id' in order_response['buy']:
                                     st.session_state.is_trade_open = True
@@ -442,7 +463,9 @@ else:
                                 else:
                                      st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Unexpected order response: {order_response}")
                             else:
-                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ No strong signal found for trade. Signal: {final_signal}")
+                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Proposal failed: {proposal_response.get('error', {}).get('message', 'Unknown error')}")
+                        else:
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ No strong signal found for trade.")
                     
                     else:
                         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error: Could not get tick history data or data is empty.")
@@ -461,7 +484,6 @@ else:
 
     # --- Check Pending Trade Result ---
     if st.session_state.is_trade_open and st.session_state.trade_start_time:
-        # Check if trade duration (e.g., 1 minute + buffer) has passed
         if datetime.now() >= st.session_state.trade_start_time + timedelta(seconds=70): 
             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⏱️ Checking trade result for contract ID: {st.session_state.contract_id}...")
             ws = None
@@ -488,7 +510,6 @@ else:
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🎉 Win! Profit: {profit}")
                         else:
                             st.session_state.consecutive_losses += 1
-                            # Martingale calculation: increase bet size
                             next_bet = st.session_state.current_amount * 2.2 
                             st.session_state.current_amount = max(st.session_state.base_amount, next_bet)
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💔 Loss! Loss: {profit}")
@@ -501,14 +522,12 @@ else:
                                 st.session_state.initial_balance = current_balance
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 New Balance: {current_balance}")
                             
-                            # Check Take Profit target
                             if st.session_state.tp_target and (current_balance - st.session_state.initial_balance) >= st.session_state.tp_target:
                                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🤑 Take Profit target ({st.session_state.tp_target}$) reached! Bot stopped.")
                                 st.session_state.bot_running = False
                         else:
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Could not retrieve balance after trade.")
                             
-                        # Check Stop Loss condition
                         if st.session_state.consecutive_losses >= st.session_state.max_consecutive_losses:
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 Stop Loss hit ({st.session_state.consecutive_losses} consecutive losses)! Bot stopped.")
                             st.session_state.bot_running = False
@@ -593,5 +612,5 @@ else:
             st.session_state.page = 'logs'
             st.rerun()
             
-    time.sleep(1) # Small sleep to prevent overwhelming the event loop
+    time.sleep(1) 
     st.rerun()
