@@ -389,14 +389,6 @@ else:
                             candles_5ticks = ticks_to_ohlc_by_count(df_ticks.tail(70), 5)
                             provisional_decision, buy_count, sell_count, error_msg = analyse_data(candles_5ticks)
                             
-                            # Check last 5 ticks direction
-                            last_5_ticks = df_ticks.tail(5)
-                            last_5_signal = "Neutral"
-                            if last_5_ticks['price'].iloc[-1] > last_5_ticks['price'].iloc[0]:
-                                last_5_signal = "Buy"
-                            elif last_5_ticks['price'].iloc[-1] < last_5_ticks['price'].iloc[0]:
-                                last_5_signal = "Sell"
-                                
                             # Check last 60 ticks direction
                             last_60_ticks = df_ticks.tail(60)
                             last_60_signal = "Neutral"
@@ -406,9 +398,10 @@ else:
                                 last_60_signal = "Sell"
                                 
                             final_signal = "Neutral"
-                            if provisional_decision == "Buy" and last_5_signal == "Buy" and last_60_signal == "Buy":
+                            # New, balanced logic: Provisional decision must match 60-tick direction
+                            if provisional_decision == "Buy" and last_60_signal == "Buy":
                                 final_signal = "Buy"
-                            elif provisional_decision == "Sell" and last_5_signal == "Sell" and last_60_signal == "Sell":
+                            elif provisional_decision == "Sell" and last_60_signal == "Sell":
                                 final_signal = "Sell"
                             
                             if final_signal is not None and final_signal in ['Buy', 'Sell']:
