@@ -497,22 +497,21 @@ else:
                     contract_info = check_contract_status(ws, st.session_state.contract_id)
                     if contract_info and contract_info.get('is_sold'):
                         profit = contract_info.get('profit', 0)
-                        payout = contract_info.get('payout', 0)
                         
-                        if payout > 0: # This is a win
-                            real_profit = payout - st.session_state.current_amount
+                        if profit > 0: # This is a win
                             st.session_state.consecutive_losses = 0
                             st.session_state.total_wins += 1
                             st.session_state.current_amount = st.session_state.base_amount
-                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🎉 Win! Profit: {real_profit}")
-                        else: # This is a loss
-                            real_loss = -st.session_state.current_amount
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🎉 Win! Profit: {profit:.2f}$")
+                        elif profit < 0: # This is a loss
                             st.session_state.consecutive_losses += 1
                             st.session_state.total_losses += 1
                             next_bet = st.session_state.current_amount * 2.2
                             st.session_state.current_amount = max(st.session_state.base_amount, next_bet)
-                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💔 Loss! Loss: {real_loss}")
-                        
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💔 Loss! Loss: {profit:.2f}$")
+                        else: # Profit is 0, so no change in amount
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚪ No change. Profit/Loss: 0$")
+                            
                         st.session_state.is_trade_open = False
                         
                         current_balance = get_balance(ws)
