@@ -170,7 +170,7 @@ def run_bot(user_id, api_token, log_queue, initial_balance, base_amount, tp_targ
             now = datetime.now()
             
             if not is_trade_open:
-                # Countdown logic - send a special message type to UI
+                # Countdown logic - send a message to the UI
                 remaining_seconds = 60 - now.second
                 log_queue.put(("countdown", remaining_seconds))
                 
