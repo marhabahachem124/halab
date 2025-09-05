@@ -134,43 +134,6 @@ def ticks_to_ohlc_by_count(ticks_df, tick_count):
         ohlc_df.set_index('timestamp', inplace=True)
     return ohlc_df
 
-def find_support_resistance(data):
-    supports = []
-    resistances = []
-    for i in range(1, len(data) - 1):
-        prev_candle = data.iloc[i-1]
-        current_candle = data.iloc[i]
-        next_candle = data.iloc[i+1]
-        if prev_candle['Close'] < prev_candle['Open'] and next_candle['Close'] > next_candle['Open']:
-            supports.append(current_candle['Low'])
-        if prev_candle['Close'] > prev_candle['Open'] and next_candle['Close'] < next_candle['Open']:
-            resistances.append(current_candle['High'])
-    supports = sorted(list(set(supports)), reverse=True)[:5]
-    resistances = sorted(list(set(resistances)))[:5]
-    return supports, resistances
-
-def analyze_candlesticks(data):
-    signal = "Neutral"
-    if len(data) >= 2:
-        last = data.iloc[-1]
-        prev = data.iloc[-2]
-        # Bullish Engulfing
-        if (last['Close'] > last['Open'] and prev['Close'] < prev['Open'] and last['Low'] <= prev['Low'] and last['High'] >= prev['High']):
-            signal = "Buy"
-        # Bearish Engulfing
-        elif (last['Close'] < last['Open'] and prev['Close'] > prev['Open'] and last['Low'] <= prev['Low'] and last['High'] >= prev['High']):
-            signal = "Sell"
-        # Hammer (Bullish)
-        body = abs(last['Close'] - last['Open'])
-        lower_shadow = min(last['Open'], last['Close']) - last['Low']
-        upper_shadow = last['High'] - max(last['Open'], last['Close'])
-        if lower_shadow > body * 2 and upper_shadow < body:
-            signal = "Buy"
-        # Shooting Star (Bearish)
-        if upper_shadow > body * 2 and lower_shadow < body:
-            signal = "Sell"
-    return signal
-
 def analyse_data(data):
     try:
         if data.empty or len(data) < 50:
@@ -234,31 +197,9 @@ def analyse_data(data):
             else:
                 if last_close > data['ema20'].iloc[-1]: signals.append("Buy")
                 else: signals.append("Sell")
-            
-        candlestick_signal = analyze_candlesticks(data)
-        if candlestick_signal != "Neutral":
-            signals.append(candlestick_signal)
-        else:
-            if data.iloc[-1]['Close'] > data.iloc[-2]['Close']:
-                signals.append("Buy")
-            else:
-                signals.append("Sell")
-            
-        supports, resistances = find_support_resistance(data)
-        last_close = data.iloc[-1]['Close']
-        if not supports and not resistances:
-            signals.append("Buy")
-        for support in supports:
-            if abs(last_close - support) / support < 0.0001:  
-                signals.append("Buy")
-            elif last_close < support:
-                signals.append("Sell")
-        for resistance in resistances:
-            if abs(last_close - resistance) / resistance < 0.0001:
-                signals.append("Sell")
-            elif last_close > resistance:
-                signals.append("Buy")
                 
+        # --- Removed candlestick and support/resistance analysis as per user request ---
+        
         buy_count = signals.count("Buy")
         sell_count = signals.count("Sell")
         final_decision = "Neutral"
@@ -388,6 +329,9 @@ else:
                         if len(df_ticks) >= 70:
                             candles_5ticks = ticks_to_ohlc_by_count(df_ticks.tail(70), 5)
                             provisional_decision, buy_count, sell_count, error_msg = analyse_data(candles_5ticks)
+                            
+                            # Log the indicator counts
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Buy Signals: {buy_count}, Sell Signals: {sell_count}")
                             
                             # Check last 60 ticks direction
                             last_60_ticks = df_ticks.tail(60)
