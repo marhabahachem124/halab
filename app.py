@@ -136,132 +136,126 @@ def ticks_to_ohlc_by_count(ticks_df, tick_count):
 
 def analyse_data(data):
     try:
-        if data.empty or len(data) < 50:
-            # Log an error if insufficient data, but don't return 0 signals yet
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Warning: Insufficient data for full analysis (less than 50 candles).")
-            # Attempt to proceed with available data if possible, or return neutral with counts
-            return "Neutral", 0, 0, "Insufficient data" # Return Neutral and 0 counts in case of insufficient data
+        # Ensure we have at least 50 candles for analysis
+        required_candles = 50
+        if data.empty or len(data) < required_candles:
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Warning: Insufficient data for full analysis (expected {required_candles} candles, got {len(data)}).")
+            return "Neutral", 0, 0, "Insufficient data"
 
-        data = data.tail(50).copy()
+        data = data.tail(required_candles).copy()
         signals = []
         
-        # RSI logic: Ensure always Buy or Sell
-        rsi_indicator = ta.momentum.RSIIndicator(data['Close'])
-        rsi_value = rsi_indicator.rsi()
-        if not rsi_value.empty:
-            if rsi_value.iloc[-1] >= 50: signals.append("Buy")
-            else: signals.append("Sell")
-        else:
-            signals.append("Neutral") # Append neutral if calculation fails
+        # Helper function to safely get a signal and handle errors
+        def get_indicator_signal(indicator_func, *args, default_signal="Neutral"):
+            try:
+                result = indicator_func(*args)
+                if isinstance(result, pd.Series):
+                    if not result.empty:
+                        return result.iloc[-1]
+                elif isinstance(result, tuple) and len(result) > 0 and isinstance(result[0], pd.Series):
+                    if not result[0].empty:
+                        return result[0].iloc[-1]
+                # Default to None if not a valid series or tuple of series
+                return None
+            except Exception as e:
+                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error in indicator: {indicator_func.__name__} - {e}")
+                return None
 
-        # Stochastic logic: Ensure always Buy or Sell
-        stoch_k = ta.momentum.StochasticOscillator(data['High'], data['Low'], data['Close'])
-        stoch_value = stoch_k.stoch()
-        if not stoch_value.empty:
-            if stoch_value.iloc[-1] >= 50: signals.append("Buy")
-            else: signals.append("Sell")
+        # RSI logic
+        rsi_value = get_indicator_signal(ta.momentum.RSIIndicator(data['Close']).rsi)
+        if rsi_value is not None:
+            signals.append("Buy" if rsi_value >= 50 else "Sell")
         else:
             signals.append("Neutral")
 
-        # ROC logic: Ensure always Buy or Sell
-        roc_indicator = ta.momentum.ROCIndicator(data['Close'])
-        roc_value = roc_indicator.roc()
-        if not roc_value.empty:
-            if roc_value.iloc[-1] >= 0: signals.append("Buy")
-            else: signals.append("Sell")
+        # Stochastic logic
+        stoch_value = get_indicator_signal(ta.momentum.StochasticOscillator(data['High'], data['Low'], data['Close']).stoch)
+        if stoch_value is not None:
+            signals.append("Buy" if stoch_value >= 50 else "Sell")
+        else:
+            signals.append("Neutral")
+
+        # ROC logic
+        roc_value = get_indicator_signal(ta.momentum.ROCIndicator(data['Close']).roc)
+        if roc_value is not None:
+            signals.append("Buy" if roc_value >= 0 else "Sell")
         else:
             signals.append("Neutral")
         
-        # ADX logic: Ensure always Buy or Sell
+        # ADX logic
         adx_indicator = ta.trend.ADXIndicator(data['High'], data['Low'], data['Close'])
-        adx_pos = adx_indicator.adx_pos()
-        adx_neg = adx_indicator.adx_neg()
-        if not adx_pos.empty and not adx_neg.empty:
-            if adx_pos.iloc[-1] >= adx_neg.iloc[-1]: signals.append("Buy")
-            else: signals.append("Sell")
+        adx_pos_val = get_indicator_signal(adx_indicator.adx_pos)
+        adx_neg_val = get_indicator_signal(adx_indicator.adx_neg)
+        if adx_pos_val is not None and adx_neg_val is not None:
+            signals.append("Buy" if adx_pos_val >= adx_neg_val else "Sell")
         else:
             signals.append("Neutral")
         
-        # MACD logic: Ensure always Buy or Sell
+        # MACD logic
         macd_indicator = ta.trend.MACD(data['Close'])
-        macd_val = macd_indicator.macd()
-        macd_signal_val = macd_indicator.macd_signal()
-        if not macd_val.empty and not macd_signal_val.empty:
-            if macd_val.iloc[-1] >= macd_signal_val.iloc[-1]: signals.append("Buy")
-            else: signals.append("Sell")
+        macd_val = get_indicator_signal(macd_indicator.macd)
+        macd_signal_val = get_indicator_signal(macd_indicator.macd_signal)
+        if macd_val is not None and macd_signal_val is not None:
+            signals.append("Buy" if macd_val >= macd_signal_val else "Sell")
         else:
             signals.append("Neutral")
         
-        # Ichimoku logic: Ensure always Buy or Sell
+        # Ichimoku logic
         ichimoku_indicator = ta.trend.IchimokuIndicator(data['High'], data['Low'])
-        tenkan_sen = (data['High'].rolling(9).max() + data['Low'].rolling(9).min()) / 2 # Pre-calculate for case inside cloud
-        ichimoku_a_val = ichimoku_indicator.ichimoku_a()
-        ichimoku_b_val = ichimoku_indicator.ichimoku_b()
-
-        if not ichimoku_a_val.empty and not ichimoku_b_val.empty and not tenkan_sen.empty:
-            last_close_ichimoku = data.iloc[-1]['Close']
-            cloud_a = ichimoku_a_val.iloc[-1]
-            cloud_b = ichimoku_b_val.iloc[-1]
-            
-            if last_close_ichimoku > max(cloud_a, cloud_b): signals.append("Buy")
-            elif last_close_ichimoku < min(cloud_a, cloud_b): signals.append("Sell")
+        ichimoku_a_val = get_indicator_signal(ichimoku_indicator.ichimoku_a)
+        ichimoku_b_val = get_indicator_signal(ichimoku_indicator.ichimoku_b)
+        last_close_ichimoku = data.iloc[-1]['Close']
+        if ichimoku_a_val is not None and ichimoku_b_val is not None:
+            if last_close_ichimoku > max(ichimoku_a_val, ichimoku_b_val):
+                signals.append("Buy")
+            elif last_close_ichimoku < min(ichimoku_a_val, ichimoku_b_val):
+                signals.append("Sell")
             else:
-                # If inside the cloud, check if above or below the conversion line (Tenkan-sen)
-                if last_close_ichimoku > tenkan_sen.iloc[-1]: signals.append("Buy")
-                else: signals.append("Sell")
+                tenkan_sen = get_indicator_signal(lambda: (data['High'].rolling(9).max() + data['Low'].rolling(9).min()) / 2)
+                if tenkan_sen is not None:
+                    signals.append("Buy" if last_close_ichimoku > tenkan_sen else "Sell")
+                else:
+                    signals.append("Neutral")
         else:
             signals.append("Neutral")
         
-        # EMA logic: Ensure always Buy or Sell
-        if len(data) >= 20:
-            ema10_indicator = ta.trend.EMAIndicator(data['Close'], window=10)
-            ema20_indicator = ta.trend.EMAIndicator(data['Close'], window=20)
-            ema10 = ema10_indicator.ema_indicator()
-            ema20 = ema20_indicator.ema_indicator()
-            
-            if not ema10.empty and not ema20.empty:
-                if ema10.iloc[-1] >= ema20.iloc[-1]: signals.append("Buy")
-                else: signals.append("Sell")
-                
+        # EMA logic
+        if len(data) >= 20: # EMA needs at least 20 periods
+            ema10 = get_indicator_signal(ta.trend.EMAIndicator(data['Close'], window=10).ema_indicator)
+            ema20 = get_indicator_signal(ta.trend.EMAIndicator(data['Close'], window=20).ema_indicator)
+            if ema10 is not None and ema20 is not None:
+                signals.append("Buy" if ema10 >= ema20 else "Sell")
                 last_close = data.iloc[-1]['Close']
-                if last_close >= ema20.iloc[-1] and last_close >= ema10.iloc[-1]: signals.append("Buy")
-                elif last_close < ema20.iloc[-1] and last_close < ema10.iloc[-1]: signals.append("Sell")
+                if last_close >= ema20 and last_close >= ema10:
+                    signals.append("Buy")
+                elif last_close < ema20 and last_close < ema10:
+                    signals.append("Sell")
                 else:
-                    if last_close > ema20.iloc[-1]: signals.append("Buy")
-                    else: signals.append("Sell")
+                    signals.append("Buy" if last_close > ema20 else "Sell")
             else:
-                 signals.append("Neutral") # Append neutral if EMA calculation fails
+                signals.append("Neutral")
         else:
-            signals.append("Neutral") # Append neutral if not enough data for EMA
+            signals.append("Neutral")
 
-        # --- Removed candlestick and support/resistance analysis as per user request ---
-        
         buy_count = signals.count("Buy")
         sell_count = signals.count("Sell")
-        neutral_count = signals.count("Neutral") # Count neutral signals
+        neutral_count = signals.count("Neutral")
         
         final_decision = "Neutral"
         if buy_count > sell_count:
             final_decision = "Buy"
         elif sell_count > buy_count:
             final_decision = "Sell"
-        # If buy_count == sell_count, final_decision remains "Neutral" as requested.
         
-        # Log the indicator counts
         log_message = f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Indicators: Buy={buy_count}, Sell={sell_count}, Neutral={neutral_count}"
         st.session_state.log_records.append(log_message)
         
-        # If no clear decision (buy_count == sell_count), we still return Neutral
-        # The main loop logic will then check if final_decision is Buy or Sell.
-        # If it's Neutral, no trade will be placed, which is the intended behavior as per user's instruction to keep it as is.
-
         return final_decision, buy_count, sell_count, None
     except Exception as e:
         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error in analyse_data: {e}")
         return None, 0, 0, f"An error occurred during analysis: {e}"
 
 def place_order(ws, api_token, symbol, action, amount):
-    # Ensure amount is within valid limits for Deriv (e.g., minimum $0.50)
     valid_amount = max(0.5, amount) 
     
     req = {
@@ -277,7 +271,7 @@ def place_order(ws, api_token, symbol, action, amount):
         response = json.loads(ws.recv())
         if response.get('error'):
             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Order Error: {response['error']['message']}")
-            return {"error": response['error']} # Return error structure
+            return {"error": response['error']}
         return response
     except Exception as e:
         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Exception in place_order: {e}")
@@ -288,19 +282,19 @@ def check_contract_status(ws, contract_id):
     try:
         ws.send(json.dumps(req))
         # Set a timeout for receiving the response
-        response = ws.recv()
+        response = ws.recv() 
         response_data = json.loads(response)
 
         if response_data.get('msg_type') == 'proposal_open_contract':
             return response_data['proposal_open_contract']
         else:
-            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Unexpected response type for contract status: {response_data.get('msg_type')}")
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Unexpected response type for contract status: {response_data.get('msg_type')}. Response: {response_data}")
             return None
     except websocket.WebSocketTimeoutException:
-        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Timeout waiting for contract info.")
+        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Timeout waiting for contract info for ID {contract_id}.")
         return None
     except Exception as e:
-        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error checking contract status: {e}")
+        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error checking contract status for ID {contract_id}: {e}")
         return None
 
 def get_balance(ws):
@@ -353,9 +347,9 @@ else:
         if not st.session_state.is_trade_open:
             status_placeholder.info("Analyzing...")
             now = datetime.now()
-            # Calculate time until the next minute starts, minus a small buffer (5 seconds)
+            # Calculate time until the next minute starts, minus a small buffer
             next_minute = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
-            seconds_left = max(0, (next_minute - now).total_seconds() - 5) # Use total_seconds for more precision
+            seconds_left = max(0, (next_minute - now).total_seconds() - 5)
             timer_placeholder.metric("Next action in", f"{int(seconds_left)}s")
         else:
             status_placeholder.info("Waiting for trade result...")
@@ -369,22 +363,24 @@ else:
         now = datetime.now()
         seconds_in_minute = now.second
         
-        # Execute trade logic only when the minute is almost over (e.g., last 5 seconds)
+        # Execute trading logic only if it's time to act (near the minute mark)
         if (now - st.session_state.last_action_time).total_seconds() >= 60 and seconds_in_minute >= 55:
-            st.session_state.last_action_time = now # Update last action time
+            st.session_state.last_action_time = now
             
             ws = None
             try:
                 ws = websocket.WebSocket()
-                ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929")
+                # Use connect with a timeout to prevent hanging
+                ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10) 
                 
                 auth_req = {"authorize": st.session_state.user_token}
                 ws.send(json.dumps(auth_req))
-                auth_response = json.loads(ws.recv())
+                # Expect authentication response quickly
+                auth_response = json.loads(ws.recv()) 
                 
                 if auth_response.get('error'):
                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Authentication failed: {auth_response['error']['message']}")
-                    st.session_state.bot_running = False # Stop bot if auth fails
+                    st.session_state.bot_running = False
                 else:
                     if st.session_state.initial_balance is None:
                         current_balance = get_balance(ws)
@@ -394,8 +390,9 @@ else:
                         else:
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Failed to retrieve initial balance.")
                             
-                    # Fetch tick history for analysis
-                    req = {"ticks_history": "R_100", "end": "latest", "count": 70, "style": "ticks"}
+                    # Request ticks history: 50 candles * 7 ticks/candle = 350 ticks
+                    ticks_to_request = 350 
+                    req = {"ticks_history": "R_100", "end": "latest", "count": ticks_to_request, "style": "ticks"}
                     ws.send(json.dumps(req))
                     tick_data = json.loads(ws.recv())
                     
@@ -404,26 +401,27 @@ else:
                         timestamps = tick_data['history']['times']
                         df_ticks = pd.DataFrame({'timestamp': timestamps, 'price': ticks})
                         
-                        if len(df_ticks) >= 70: # Ensure enough ticks for OHLC conversion
-                            candles_5ticks = ticks_to_ohlc_by_count(df_ticks.tail(70), 5)
+                        # Convert ticks to OHLC candles (5 ticks per candle)
+                        ticks_per_candle = 5
+                        if len(df_ticks) >= ticks_per_candle: # Ensure enough ticks for at least one candle
+                            candles_df = ticks_to_ohlc_by_count(df_ticks, ticks_per_candle)
                             
-                            # Call analyse_data, which now logs counts and ensures non-zero signals if possible
-                            provisional_decision, buy_count, sell_count, error_msg = analyse_data(candles_5ticks)
+                            provisional_decision, buy_count, sell_count, error_msg = analyse_data(candles_df)
                             
-                            if error_msg: # Log analysis errors
+                            if error_msg:
                                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Analysis Error: {error_msg}")
                             
-                            # Check last 60 ticks direction as a confirmation
+                            # Get direction from last 60 ticks
                             last_60_ticks = df_ticks.tail(60)
                             last_60_signal = "Neutral"
-                            if len(last_60_ticks) >= 2: # Ensure there are at least two points to compare
+                            if len(last_60_ticks) >= 2:
                                 if last_60_ticks['price'].iloc[-1] > last_60_ticks['price'].iloc[0]:
                                     last_60_signal = "Buy"
                                 elif last_60_ticks['price'].iloc[-1] < last_60_ticks['price'].iloc[0]:
                                     last_60_signal = "Sell"
                                 
                             final_signal = "Neutral"
-                            # The logic here is: provisional_decision must match last_60_signal for a trade
+                            # Logic: Provisional decision must match 60-tick direction for a trade
                             if provisional_decision == "Buy" and last_60_signal == "Buy":
                                 final_signal = "Buy"
                             elif provisional_decision == "Sell" and last_60_signal == "Sell":
@@ -448,33 +446,39 @@ else:
                     
                     else:
                         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error: Could not get tick history data or data is empty.")
+            except websocket.WebSocketConnectionClosedException:
+                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ WebSocket connection closed unexpectedly.")
+                st.session_state.bot_running = False
+            except websocket.WebSocketTimeoutException:
+                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ WebSocket connection timed out.")
+                st.session_state.bot_running = False
             except Exception as e:
                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ An error occurred during the trading cycle: {e}")
             finally:
-                if ws:
-                    ws.close() # Ensure WebSocket connection is closed
-            st.rerun() # Rerun the app to update UI based on new state
+                if ws and ws.connected:
+                    ws.close()
+            st.rerun()
 
     # --- Check Pending Trade Result ---
     if st.session_state.is_trade_open and st.session_state.trade_start_time:
-        # Check if at least 70 seconds have passed since the trade was opened (to ensure contract closure)
-        if datetime.now() >= st.session_state.trade_start_time + timedelta(seconds=70):
+        # Check if trade duration (e.g., 1 minute + buffer) has passed
+        if datetime.now() >= st.session_state.trade_start_time + timedelta(seconds=70): 
             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⏱️ Checking trade result for contract ID: {st.session_state.contract_id}...")
             ws = None
             try:
                 ws = websocket.WebSocket()
-                ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929")
+                ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
                 auth_req = {"authorize": st.session_state.user_token}
                 ws.send(json.dumps(auth_req))
                 auth_response = json.loads(ws.recv())
                 
                 if auth_response.get('error'):
                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Reconnection failed for result check. Authentication error.")
-                    st.session_state.bot_running = False # Stop bot if auth fails
+                    st.session_state.bot_running = False
                     st.session_state.is_trade_open = False
                 else:
                     contract_info = check_contract_status(ws, st.session_state.contract_id)
-                    if contract_info and contract_info.get('is_sold'): # Ensure contract is sold and info is available
+                    if contract_info and contract_info.get('is_sold'):
                         profit = contract_info.get('profit', 0)
                         is_win = profit > 0
                         
@@ -484,53 +488,57 @@ else:
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🎉 Win! Profit: {profit}")
                         else:
                             st.session_state.consecutive_losses += 1
-                            # Martingale logic: double bet after a loss, but ensure it doesn't exceed a reasonable limit or go below base amount if issues arise.
-                            # Using 2.2 multiplier as per previous logic.
-                            next_bet = st.session_state.current_amount * 2.2
-                            st.session_state.current_amount = max(st.session_state.base_amount, next_bet) # Ensure not to go below base amount
+                            # Martingale calculation: increase bet size
+                            next_bet = st.session_state.current_amount * 2.2 
+                            st.session_state.current_amount = max(st.session_state.base_amount, next_bet)
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💔 Loss! Loss: {profit}")
                         
-                        st.session_state.is_trade_open = False # Trade is no longer open
+                        st.session_state.is_trade_open = False
                         
                         current_balance = get_balance(ws)
                         if current_balance is not None:
-                            # If initial balance wasn't set (e.g., bot restarted), set it now.
                             if st.session_state.initial_balance is None:
                                 st.session_state.initial_balance = current_balance
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 New Balance: {current_balance}")
                             
-                            # Check Take Profit
+                            # Check Take Profit target
                             if st.session_state.tp_target and (current_balance - st.session_state.initial_balance) >= st.session_state.tp_target:
                                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🤑 Take Profit target ({st.session_state.tp_target}$) reached! Bot stopped.")
-                                st.session_state.bot_running = False # Stop bot
+                                st.session_state.bot_running = False
                         else:
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Could not retrieve balance after trade.")
                             
-                        # Check Stop Loss (consecutive losses)
+                        # Check Stop Loss condition
                         if st.session_state.consecutive_losses >= st.session_state.max_consecutive_losses:
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 Stop Loss hit ({st.session_state.consecutive_losses} consecutive losses)! Bot stopped.")
-                            st.session_state.bot_running = False # Stop bot
+                            st.session_state.bot_running = False
                     elif contract_info and not contract_info.get('is_sold'):
                         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Contract {st.session_state.contract_id} is not yet sold/closed.")
-                        # Keep trade_open as True to re-check later, or implement a re-check timeout
                     else:
                         st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Could not get contract info for ID: {st.session_state.contract_id}. Contract might have been cancelled or failed.")
-                        st.session_state.is_trade_open = False # Mark as not open if info is missing
+                        st.session_state.is_trade_open = False
+            except websocket.WebSocketConnectionClosedException:
+                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ WebSocket connection closed unexpectedly during result check.")
+                st.session_state.bot_running = False
+                st.session_state.is_trade_open = False
+            except websocket.WebSocketTimeoutException:
+                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ WebSocket connection timed out during result check.")
+                st.session_state.bot_running = False
+                st.session_state.is_trade_open = False
             except Exception as e:
                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ An error occurred getting the trade result: {e}")
             finally:
-                if ws:
-                    ws.close() # Ensure WebSocket connection is closed
-            # Reset trade state variables after checking result
+                if ws and ws.connected:
+                    ws.close()
             st.session_state.trade_start_time = None
             st.session_state.contract_id = None
-            st.rerun() # Rerun to update UI
+            st.rerun()
 
     # --- UI Navigation and Controls ---
     if st.session_state.page == 'inputs':
         st.header("1. Bot Settings")
         st.session_state.user_token = st.text_input("Enter your Deriv API token:", type="password", key="api_token_input")
-        st.session_state.base_amount = st.number_input("Base Amount", min_value=0.5, step=0.5, value=st.session_state.base_amount)
+        st.session_state.base_amount = st.number_input("Base Amount ($)", min_value=0.5, step=0.5, value=st.session_state.base_amount)
         st.session_state.tp_target = st.number_input("Take Profit Target ($)", min_value=1.0, step=1.0, value=st.session_state.tp_target)
         st.session_state.max_consecutive_losses = st.number_input("Max Consecutive Losses", min_value=1, step=1, value=st.session_state.max_consecutive_losses)
         
@@ -545,14 +553,14 @@ else:
                 st.error("Please enter a valid API token before starting the bot.")
             else:
                 st.session_state.bot_running = True
-                st.session_state.current_amount = st.session_state.base_amount # Reset amount to base
-                st.session_state.consecutive_losses = 0 # Reset losses
+                st.session_state.current_amount = st.session_state.base_amount
+                st.session_state.consecutive_losses = 0
                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot has been started.")
                 st.rerun()
                 
         if stop_button:
             st.session_state.bot_running = False
-            st.session_state.is_trade_open = False # Ensure no pending trade is considered running
+            st.session_state.is_trade_open = False
             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 Bot stopped by user.")
             st.rerun()
             
@@ -560,7 +568,7 @@ else:
         st.header("2. Live Bot Logs")
         with st.container(height=600):
             st.text_area("Logs", "\n".join(st.session_state.log_records), height=600, key="logs_textarea")
-            # Auto-scroll to bottom
+            # JavaScript to auto-scroll the textarea to the bottom
             components.html(
                 """
                 <script>
@@ -585,6 +593,5 @@ else:
             st.session_state.page = 'logs'
             st.rerun()
             
-    # Rerun every second to keep UI updated and check timers
-    time.sleep(1)
+    time.sleep(1) # Small sleep to prevent overwhelming the event loop
     st.rerun()
