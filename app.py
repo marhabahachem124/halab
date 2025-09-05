@@ -86,8 +86,7 @@ def is_user_allowed(user_id):
 
 # --- Bot Logic (to be run in a separate process) ---
 def run_bot(user_id, api_token, log_queue, initial_balance, base_amount, tp_target, max_consecutive_losses):
-    log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot is running")
-
+    
     # Initialization inside the process
     current_amount = base_amount
     consecutive_losses = 0
@@ -115,122 +114,33 @@ def run_bot(user_id, api_token, log_queue, initial_balance, base_amount, tp_targ
             return None
         except Exception:
             return None
+    
+    # New logic: Analyse by comparing direction of first vs second half of ticks
+    def analyse_data(ticks_df):
+        if len(ticks_df) < 120:
+            return "Neutral", "Insufficient data (less than 120 ticks)"
 
-    def analyse_data(data):
-        required_candles = 50
-        if data.empty or len(data) < required_candles:
-            return "Neutral", 0, 0, "Insufficient data"
-        data = data.tail(required_candles).copy()
-        signals = []
-        def get_indicator_signal(indicator_func):
-            try:
-                result = indicator_func()
-                if isinstance(result, pd.Series) and not result.empty:
-                    return result.iloc[-1]
-                return None
-            except Exception:
-                return None
-        
-        rsi_value = get_indicator_signal(lambda: ta.momentum.RSIIndicator(data['Close'], window=14).rsi())
-        if rsi_value is not None:
-            signals.append("Buy" if rsi_value >= 50 else "Sell")
-        
-        stoch_value = get_indicator_signal(lambda: ta.momentum.StochasticOscillator(data['High'], data['Low'], data['Close']).stoch())
-        if stoch_value is not None:
-            signals.append("Buy" if stoch_value >= 50 else "Sell")
-        
-        roc_value = get_indicator_signal(lambda: ta.momentum.ROCIndicator(data['Close']).roc())
-        if roc_value is not None:
-            signals.append("Buy" if roc_value >= 0 else "Sell")
-        
-        adx_indicator = ta.trend.ADXIndicator(data['High'], data['Low'], data['Close'])
-        adx_pos_val = get_indicator_signal(lambda: adx_indicator.adx_pos())
-        adx_neg_val = get_indicator_signal(lambda: adx_indicator.adx_neg())
-        if adx_pos_val is not None and adx_neg_val is not None:
-            signals.append("Buy" if adx_pos_val >= adx_neg_val else "Sell")
-        
-        macd_indicator = ta.trend.MACD(data['Close'])
-        macd_val = get_indicator_signal(lambda: macd_indicator.macd())
-        macd_signal_val = get_indicator_signal(lambda: macd_indicator.macd_signal())
-        if macd_val is not None and macd_signal_val is not None:
-            signals.append("Buy" if macd_val >= macd_signal_val else "Sell")
-        
-        ichimoku_indicator = ta.trend.IchimokuIndicator(data['High'], data['Low'])
-        ichimoku_a_val = get_indicator_signal(lambda: ichimoku_indicator.ichimoku_a())
-        ichimoku_b_val = get_indicator_signal(lambda: ichimoku_indicator.ichimoku_b())
-        last_close_ichimoku = data.iloc[-1]['Close']
-        if ichimoku_a_val is not None and ichimoku_b_val is not None:
-            if last_close_ichimoku > max(ichimoku_a_val, ichimoku_b_val):
-                signals.append("Buy")
-            elif last_close_ichimoku < min(ichimoku_a_val, ichimoku_b_val):
-                signals.append("Sell")
-            else:
-                tenkan_sen = (data['High'].rolling(window=9).max() + data['Low'].rolling(window=9).min()) / 2
-                tenkan_sen_val = get_indicator_signal(lambda: tenkan_sen)
-                if tenkan_sen_val is not None:
-                    signals.append("Buy" if last_close_ichimoku > tenkan_sen_val else "Sell")
+        first_half = ticks_df.iloc[:60]
+        second_half = ticks_df.iloc[60:]
 
-        if len(data) >= 20:
-            ema10 = get_indicator_signal(lambda: ta.trend.EMAIndicator(data['Close'], window=10).ema_indicator())
-            ema20 = get_indicator_signal(lambda: ta.trend.EMAIndicator(data['Close'], window=20).ema_indicator())
-            if ema10 is not None and ema20 is not None:
-                signals.append("Buy" if ema10 >= ema20 else "Sell")
-        
-        obv_series = ta.volume.OnBalanceVolumeIndicator(data['Close'], data['Volume']).on_balance_volume()
-        if not obv_series.empty and len(obv_series) > 1:
-            if obv_series.iloc[-1] > obv_series.iloc[-2]:
-                signals.append("Buy")
-            elif obv_series.iloc[-1] < obv_series.iloc[-2]:
-                signals.append("Sell")
-        
-        cci_value = get_indicator_signal(lambda: ta.trend.CCIIndicator(data['High'], data['Low'], data['Close']).cci())
-        if cci_value is not None:
-            if cci_value > 0:
-                signals.append("Buy")
-            elif cci_value < 0:
-                signals.append("Sell")
-        
-        ao_value = get_indicator_signal(lambda: ta.momentum.AwesomeOscillatorIndicator(data['High'], data['Low']).awesome_oscillator())
-        if ao_value is not None:
-            if ao_value > 0:
-                signals.append("Buy")
-            elif ao_value < 0:
-                signals.append("Sell")
+        first_half_direction = "Neutral"
+        if first_half['price'].iloc[-1] > first_half['price'].iloc[0]:
+            first_half_direction = "Up"
+        elif first_half['price'].iloc[-1] < first_half['price'].iloc[0]:
+            first_half_direction = "Down"
 
-        buy_count = signals.count("Buy")
-        sell_count = signals.count("Sell")
-        total_indicators = len(signals)
-        provisional_decision = "Neutral"
-        if total_indicators > 0:
-            buy_percentage = (buy_count / total_indicators) * 100
-            sell_percentage = (sell_count / total_indicators) * 100
-            if buy_percentage >= 70:
-                provisional_decision = "Buy"
-            elif sell_percentage >= 70:
-                provisional_decision = "Sell"
-        return provisional_decision, buy_count, sell_count, None
+        second_half_direction = "Neutral"
+        if second_half['price'].iloc[-1] > second_half['price'].iloc[0]:
+            second_half_direction = "Up"
+        elif second_half['price'].iloc[-1] < second_half['price'].iloc[0]:
+            second_half_direction = "Down"
 
-    def ticks_to_ohlc_by_count(ticks_df, tick_count):
-        if ticks_df.empty: return pd.DataFrame()
-        ohlc_data = []
-        prices = ticks_df['price'].values
-        timestamps = ticks_df['timestamp'].values
-        for i in range(0, len(prices), tick_count):
-            chunk = prices[i:i + tick_count]
-            if len(chunk) == tick_count:
-                ohlc_data.append({
-                    'timestamp': timestamps[i+tick_count-1],
-                    'Open': chunk[0],
-                    'High': np.max(chunk),
-                    'Low': np.min(chunk),
-                    'Close': chunk[-1],
-                    'Volume': tick_count
-                })
-        ohlc_df = pd.DataFrame(ohlc_data)
-        if not ohlc_df.empty:
-            ohlc_df['timestamp'] = pd.to_datetime(ohlc_df['timestamp'], unit='s')
-            ohlc_df.set_index('timestamp', inplace=True)
-        return ohlc_df
+        if first_half_direction == "Up" and second_half_direction == "Down":
+            return "Sell", "Reversal: Up trend followed by a Down trend"
+        elif first_half_direction == "Down" and second_half_direction == "Up":
+            return "Buy", "Reversal: Down trend followed by an Up trend"
+        else:
+            return "Neutral", "No clear reversal pattern found"
 
     def place_order(ws, proposal_id, amount):
         valid_amount = round(amount, 2)
@@ -243,88 +153,81 @@ def run_bot(user_id, api_token, log_queue, initial_balance, base_amount, tp_targ
             return {"error": {"message": "Failed to place order"}}
 
     last_action_time = datetime.min
+    
+    log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot is running.")
+    
+    ws = websocket.WebSocket()
+    ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
+    ws.send(json.dumps({"authorize": api_token}))
+    auth_response = json.loads(ws.recv())
+    initial_balance = get_balance(ws)
+    if initial_balance is not None:
+        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Initial Balance: {initial_balance:.2f} USD")
+    ws.close()
+    
     while True:
         try:
             now = datetime.now()
-            seconds_in_minute = now.second
             
-            if not is_trade_open and (now - last_action_time).total_seconds() >= 60 and seconds_in_minute >= 55:
-                last_action_time = now
-                ws = websocket.WebSocket()
-                ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
-                ws.send(json.dumps({"authorize": api_token}))
-                auth_response = json.loads(ws.recv())
+            if not is_trade_open:
+                if (now - last_action_time).total_seconds() >= 60 and now.second >= 55:
+                    last_action_time = now
+                    ws = websocket.WebSocket()
+                    ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
+                    ws.send(json.dumps({"authorize": api_token}))
+                    auth_response = json.loads(ws.recv())
 
-                if auth_response.get('error'):
-                    log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Authentication failed: {auth_response['error']['message']}")
-                    ws.close()
-                    continue
-                
-                # Get initial balance on first run
-                if initial_balance is None:
-                    initial_balance = get_balance(ws)
-                    if initial_balance is not None:
-                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Initial Balance: {initial_balance:.2f}")
-
-                ticks_to_request = 350
-                ws.send(json.dumps({"ticks_history": "R_100", "end": "latest", "count": ticks_to_request, "style": "ticks"}))
-                tick_data = json.loads(ws.recv())
-                
-                if 'history' in tick_data and tick_data['history']['prices']:
-                    df_ticks = pd.DataFrame({'timestamp': tick_data['history']['times'], 'price': tick_data['history']['prices']})
-                    candles_df = ticks_to_ohlc_by_count(df_ticks, 7)
-                    provisional_decision, _, _, _ = analyse_data(candles_df)
+                    if auth_response.get('error'):
+                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Authentication failed.")
+                        ws.close()
+                        continue
                     
-                    last_5_ticks = df_ticks.tail(5)
-                    last_5_signal = "Neutral"
-                    if len(last_5_ticks) == 5:
-                        if last_5_ticks['price'].iloc[-1] > last_5_ticks['price'].iloc[0]:
-                            last_5_signal = "Buy"
-                        elif last_5_ticks['price'].iloc[-1] < last_5_ticks['price'].iloc[0]:
-                            last_5_signal = "Sell"
-
-                    last_60_ticks = df_ticks.tail(60)
-                    last_60_signal = "Neutral"
-                    if len(last_60_ticks) == 60:
-                        if last_60_ticks['price'].iloc[-1] > last_60_ticks['price'].iloc[0]:
-                            last_60_signal = "Buy"
-                        elif last_60_ticks['price'].iloc[-1] < last_60_ticks['price'].iloc[0]:
-                            last_60_signal = "Sell"
-
-                    final_signal = "Neutral"
-                    if provisional_decision == "Buy" and last_5_signal == "Buy" and last_60_signal == "Buy":
-                        final_signal = "Sell"
-                    elif provisional_decision == "Sell" and last_5_signal == "Sell" and last_60_signal == "Sell":
-                        final_signal = "Buy"
-
-                    if final_signal in ['Buy', 'Sell']:
-                        proposal_req = {
-                            "proposal": 1,
-                            "amount": round(current_amount, 2),
-                            "basis": "stake",
-                            "contract_type": "CALL" if final_signal == 'Buy' else "PUT",
-                            "currency": "USD",
-                            "duration": 1,
-                            "duration_unit": "m",
-                            "symbol": "R_100",
-                        }
-                        ws.send(json.dumps(proposal_req))
-                        proposal_response = json.loads(ws.recv())
+                    ticks_to_request = 120
+                    ws.send(json.dumps({"ticks_history": "R_100", "end": "latest", "count": ticks_to_request, "style": "ticks"}))
+                    tick_data = json.loads(ws.recv())
+                    
+                    if 'history' in tick_data and tick_data['history']['prices'] and len(tick_data['history']['prices']) >= 120:
+                        df_ticks = pd.DataFrame({'timestamp': tick_data['history']['times'], 'price': tick_data['history']['prices']})
+                        provisional_decision, analysis_reason = analyse_data(df_ticks)
                         
-                        if 'proposal' in proposal_response:
-                            proposal_id = proposal_response['proposal']['id']
-                            order_response = place_order(ws, proposal_id, current_amount)
+                        if provisional_decision == "Neutral":
+                            log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 🚫 No trade signal. Waiting.")
+
+                        final_signal = "Neutral"
+                        if provisional_decision == "Buy":
+                            final_signal = "Call"
+                        elif provisional_decision == "Sell":
+                            final_signal = "Put"
+
+                        if final_signal in ['Call', 'Put']:
+                            proposal_req = {
+                                "proposal": 1,
+                                "amount": round(current_amount, 2),
+                                "basis": "stake",
+                                "contract_type": final_signal,
+                                "currency": "USD",
+                                "duration": 1,
+                                "duration_unit": "m",
+                                "symbol": "R_100",
+                            }
+                            ws.send(json.dumps(proposal_req))
+                            proposal_response = json.loads(ws.recv())
                             
-                            if 'buy' in order_response:
-                                is_trade_open = True
-                                trade_start_time = datetime.now()
-                                contract_id = order_response['buy']['contract_id']
-                                log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ➡️ Order placed for: {final_signal}")
-                            elif 'error' in order_response:
-                                log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Order failed: {order_response['error']['message']}")
-                        else:
-                            log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Proposal failed: {proposal_response.get('error', {}).get('message', 'Unknown error')}")
-                ws.close()
+                            if 'proposal' in proposal_response:
+                                proposal_id = proposal_response['proposal']['id']
+                                order_response = place_order(ws, proposal_id, current_amount)
+                                
+                                if 'buy' in order_response:
+                                    is_trade_open = True
+                                    trade_start_time = datetime.now()
+                                    contract_id = order_response['buy']['contract_id']
+                                else:
+                                    log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Order failed.")
+                            else:
+                                log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Proposal failed.")
+                    else:
+                         log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ Insufficient tick data.")
+                    ws.close()
             
             if is_trade_open and (datetime.now() >= trade_start_time + timedelta(seconds=70)):
                 ws = websocket.WebSocket()
@@ -336,8 +239,6 @@ def run_bot(user_id, api_token, log_queue, initial_balance, base_amount, tp_targ
                 if contract_info and contract_info.get('is_sold'):
                     profit = contract_info.get('profit', 0)
                     
-                    log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ⏳ Waiting for result...")
-                    
                     if profit > 0:
                         consecutive_losses = 0
                         total_wins += 1
@@ -347,17 +248,18 @@ def run_bot(user_id, api_token, log_queue, initial_balance, base_amount, tp_targ
                         total_losses += 1
                         current_amount = max(base_amount, current_amount * 2.2)
                     
+                    log_queue.put(("stats", total_wins, total_losses))
+                    
                     is_trade_open = False
                     current_balance = get_balance(ws)
                     if current_balance is not None:
-                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Current Balance: {current_balance:.2f}")
-                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Total Wins: {total_wins}, 🔴 Total Losses: {total_losses}")
+                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Current Balance: {current_balance:.2f} USD")
 
                     if tp_target and (current_balance - initial_balance) >= tp_target:
-                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 🤑 TP reached! ({tp_target}$)! Stopping bot.")
+                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 🤑 TP hit! Bot is stopping.")
                         break
                     if consecutive_losses >= max_consecutive_losses:
-                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 SL reached! ({consecutive_losses} consecutive losses)! Stopping bot.")
+                        log_queue.put(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 SL hit! Bot is stopping.")
                         break
                 ws.close()
                 
@@ -410,6 +312,8 @@ if start_button:
                 'base_amount': base_amount,
                 'tp_target': tp_target,
                 'max_consecutive_losses': max_consecutive_losses,
+                'wins': 0,
+                'losses': 0
             }
             st.success(f"Bot started for user {user_id}.")
 
@@ -418,17 +322,32 @@ if stop_button:
         st.session_state.processes[user_id].terminate()
         st.session_state.processes[user_id].join()
         st.session_state.user_data[user_id]['status'] = 'Stopped'
+        st.session_state.user_data[user_id]['logs'].append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 Bot stopped.")
         st.warning(f"Bot stopped for user {user_id}.")
     else:
         st.info(f"No bot is running for user {user_id}.")
 
-# --- Display Logs ---
+# --- Display Logs and Stats ---
 st.header("2. Bot Logs")
 if user_id in st.session_state.user_data:
     user_logs_data = st.session_state.user_data[user_id]
+    
+    # Update stats and logs from the queue
     if 'log_queue' in user_logs_data and user_logs_data['status'] == 'Running':
         while not user_logs_data['log_queue'].empty():
-            user_logs_data['logs'].append(user_logs_data['log_queue'].get())
+            log_item = user_logs_data['log_queue'].get()
+            if isinstance(log_item, tuple) and log_item[0] == "stats":
+                user_logs_data['wins'] = log_item[1]
+                user_logs_data['losses'] = log_item[2]
+            else:
+                user_logs_data['logs'].append(log_item)
     
-    st.markdown(f"**Status:** {user_logs_data['status']}")
+    # Display stats at the top of the logs section
+    st.subheader("Trading Statistics")
+    col_wins, col_losses = st.columns(2)
+    with col_wins:
+        st.metric(label="✅ Wins", value=user_logs_data.get('wins', 0))
+    with col_losses:
+        st.metric(label="🔴 Losses", value=user_logs_data.get('losses', 0))
+    
     st.text_area(f"Logs for user {user_id}", "\n".join(user_logs_data['logs']), height=400)
