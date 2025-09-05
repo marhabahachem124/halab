@@ -170,7 +170,11 @@ def run_bot(user_id, api_token, log_queue, initial_balance, base_amount, tp_targ
             now = datetime.now()
             
             if not is_trade_open:
-                if (now - last_action_time).total_seconds() >= 60 and now.second >= 55:
+                # Countdown logic
+                remaining_seconds = 60 - now.second
+                log_queue.put(f"[{now.strftime('%H:%M:%S')}] ⏳ Waiting... ({remaining_seconds}s remaining)")
+
+                if now.second >= 55:
                     last_action_time = now
                     ws = websocket.WebSocket()
                     ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
