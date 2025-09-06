@@ -13,10 +13,10 @@ import time
 import numpy as np
 import threading
 import collections
-# Corrected import for CookiesManager
+# تم تصحيح أمر الاستيراد هنا
 from streamlit_cookies_manager.manager import CookiesManager
 
-# --- Database Setup ---
+# --- إعداد قاعدة البيانات ---
 DATABASE_URL = "postgresql://khourybot_db_user:wlVAwKwLhfzzH9HFsRMNo3IOo4dX6DYm@dpg-d2smi46r433s73frbbcg-a/khourybot_db"
 engine = sa.create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
@@ -55,7 +55,7 @@ class Device(Base):
 
 Base.metadata.create_all(engine)
 
-# --- Bot Core Logic (The engine) ---
+# --- منطق الروبوت الأساسي ---
 def log_message(device_id, message):
     session = Session()
     try:
@@ -198,13 +198,13 @@ def get_balance(ws, device_id):
         return None
     except Exception as e: log_message(device_id, f"❌ Exception in get_balance: {e}"); return None
 
-# --- Main Bot Loop for a SINGLE User ---
+# --- حلقة الروبوت الرئيسية لمستخدم واحد ---
 def run_bot_for_user(device_id):
-    log_message(device_id, "🟢 Bot logic thread has started for this user.")
+    log_message(device_id, "🟢 بدأ تشغيل الروبوت لهذا المستخدم.")
     while True:
         state = get_bot_state(device_id)
         if not state or not state.is_running:
-            log_message(device_id, "🛑 Bot state is not running. Thread stopping.")
+            log_message(device_id, "🛑 حالة الروبوت متوقفة. سيتم إيقاف عمل الروبوت.")
             break
         
         if state.is_trade_open:
@@ -213,7 +213,7 @@ def run_bot_for_user(device_id):
                 try:
                     ws = websocket.WebSocket(); ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10); auth_req = {"authorize": state.user_token}; ws.send(json.dumps(auth_req)); auth_response = json.loads(ws.recv())
                     if auth_response.get('error'):
-                        log_message(device_id, "❌ Auth failed during result check."); update_bot_state(device_id, is_running=False, is_trade_open=False); continue
+                        log_message(device_id, "❌ فشل المصادقة أثناء التحقق من النتيجة."); update_bot_state(device_id, is_running=False, is_trade_open=False); continue
                     contract_info = check_contract_status(ws, state.contract_id, device_id)
                     if contract_info and contract_info.get('is_sold'):
                         profit = contract_info.get('profit', 0); wins = state.total_wins; losses = state.total_losses; consecutive = state.consecutive_losses; current_amount = state.current_amount
@@ -222,14 +222,14 @@ def run_bot_for_user(device_id):
                         update_bot_state(device_id, is_trade_open=False, trade_start_time=None, contract_id=None, consecutive_losses=consecutive, total_wins=wins, total_losses=losses, current_amount=current_amount)
                         current_balance = get_balance(ws, device_id)
                         if current_balance is not None:
-                            log_message(device_id, f"💰 Current Balance: {current_balance:.2f}")
+                            log_message(device_id, f"💰 الرصيد الحالي: {current_balance:.2f}")
                             if state.tp_target and state.initial_balance and (current_balance - state.initial_balance) >= state.tp_target:
-                                log_message(device_id, f"🤑 Take Profit target ({state.tp_target}$) reached! Bot stopped."); update_bot_state(device_id, is_running=False)
+                                log_message(device_id, f"🤑 تم الوصول إلى هدف الربح ({state.tp_target}$)! سيتم إيقاف الروبوت."); update_bot_state(device_id, is_running=False)
                         if consecutive >= state.max_consecutive_losses:
-                            log_message(device_id, f"🛑 Stop Loss hit ({consecutive} consecutive losses)! Bot stopped."); update_bot_state(device_id, is_running=False)
+                            log_message(device_id, f"🛑 تم الوصول إلى الحد الأقصى للخسائر ({consecutive} خسارة متتالية)! سيتم إيقاف الروبوت."); update_bot_state(device_id, is_running=False)
                     else:
-                        log_message(device_id, f"⚠ Could not get contract info for ID: {state.contract_id}."); update_bot_state(device_id, is_trade_open=False, trade_start_time=None, contract_id=None)
-                except Exception as e: log_message(device_id, f"❌ An error occurred getting the trade result: {e}"); update_bot_state(device_id, is_trade_open=False)
+                        log_message(device_id, f"⚠ تعذر الحصول على معلومات العقد للمعرف: {state.contract_id}."); update_bot_state(device_id, is_trade_open=False, trade_start_time=None, contract_id=None)
+                except Exception as e: log_message(device_id, f"❌ حدث خطأ أثناء الحصول على نتيجة الصفقة: {e}"); update_bot_state(device_id, is_trade_open=False)
                 finally:
                     if ws and ws.connected: ws.close()
             time.sleep(1); continue
@@ -242,19 +242,19 @@ def run_bot_for_user(device_id):
         ws = None
         try:
             ws = websocket.WebSocket(); ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10); auth_req = {"authorize": state.user_token}; ws.send(json.dumps(auth_req)); auth_response = json.loads(ws.recv())
-            if auth_response.get('error'): log_message(device_id, f"❌ Auth failed: {auth_response['error']['message']}"); update_bot_state(device_id, is_running=False); continue
+            if auth_response.get('error'): log_message(device_id, f"❌ فشل المصادقة: {auth_response['error']['message']}"); update_bot_state(device_id, is_running=False); continue
             if state.initial_balance is None:
                 current_balance = get_balance(ws, device_id)
                 if current_balance is not None:
-                    update_bot_state(device_id, initial_balance=current_balance); log_message(device_id, f"💰 Initial Balance: {current_balance}")
-                else: log_message(device_id, "❌ Failed to retrieve initial balance.")
+                    update_bot_state(device_id, initial_balance=current_balance); log_message(device_id, f"💰 الرصيد الأولي: {current_balance}")
+                else: log_message(device_id, "❌ فشل استرداد الرصيد الأولي.")
             
             ticks_to_request = 350; req = {"ticks_history": "R_100", "end": "latest", "count": ticks_to_request, "style": "ticks"}; ws.send(json.dumps(req)); tick_data = json.loads(ws.recv())
             if 'history' in tick_data and tick_data['history']['prices']:
                 ticks = tick_data['history']['prices']; timestamps = tick_data['history']['times']; df_ticks = pd.DataFrame({'timestamp': timestamps, 'price': ticks})
                 ticks_per_candle = 7; candles_df = ticks_to_ohlc_by_count(df_ticks, ticks_per_candle)
                 provisional_decision, _, _, error_msg = analyse_data(candles_df, device_id)
-                if error_msg: log_message(device_id, f"❌ Analysis Error: {error_msg}"); continue
+                if error_msg: log_message(device_id, f"❌ خطأ في التحليل: {error_msg}"); continue
                 
                 final_signal = "Neutral"
                 if provisional_decision == "Buy": final_signal = "Buy"
@@ -267,16 +267,16 @@ def run_bot_for_user(device_id):
                         proposal_id = proposal_response['proposal']['id']; order_response = place_order(ws, proposal_id, state.current_amount, device_id)
                         if 'buy' in order_response and 'contract_id' in order_response['buy']:
                             update_bot_state(device_id, is_trade_open=True, trade_start_time=datetime.now(), contract_id=order_response['buy']['contract_id'])
-                        elif 'error' in order_response: log_message(device_id, f"❌ Order failed: {order_response['error']['message']}")
-                        else: log_message(device_id, f"❌ Unexpected order response: {order_response}")
-                    else: log_message(device_id, f"❌ Proposal failed: {proposal_response.get('error', {}).get('message', 'Unknown error')}")
-            else: log_message(device_id, "❌ Error: Could not get tick history data or data is empty.")
-        except Exception as e: log_message(device_id, f"❌ An error occurred during the trading cycle: {e}")
+                        elif 'error' in order_response: log_message(device_id, f"❌ فشلت الصفقة: {order_response['error']['message']}")
+                        else: log_message(device_id, f"❌ استجابة غير متوقعة للصفقة: {order_response}")
+                    else: log_message(device_id, f"❌ فشل الاقتراح: {proposal_response.get('error', {}).get('message', 'خطأ غير معروف')}")
+            else: log_message(device_id, "❌ خطأ: تعذر الحصول على بيانات السعر أو أن البيانات فارغة.")
+        except Exception as e: log_message(device_id, f"❌ حدث خطأ أثناء دورة التداول: {e}")
         finally:
             if ws and ws.connected: ws.close()
 
 
-# --- Streamlit App ---
+# --- واجهة Streamlit ---
 def get_or_create_device_id_with_cookie():
     cookies = CookiesManager()
     if not cookies.ready():
@@ -297,8 +297,8 @@ def is_user_allowed(user_id):
         with open(ALLOWED_USERS_FILE, 'r') as f:
             allowed_ids = {line.strip() for line in f}
             if user_id in allowed_ids: return True
-    except FileNotFoundError: st.error(f"Error: '{ALLOWED_USERS_FILE}' not found. Please create this file with a list of allowed user IDs."); return False
-    except Exception as e: st.error(f"Error reading '{ALLOWED_USERS_FILE}': {e}"); return False
+    except FileNotFoundError: st.error(f"خطأ: لم يتم العثور على '{ALLOWED_USERS_FILE}'. يرجى إنشاء هذا الملف بقائمة من معرفات المستخدم المسموح بها."); return False
+    except Exception as e: st.error(f"خطأ في قراءة '{ALLOWED_USERS_FILE}': {e}"); return False
     return False
 
 def update_bot_state_from_ui(device_id, **kwargs):
@@ -322,7 +322,7 @@ def get_logs(device_id):
     finally: session.close()
     
 def main():
-    st.title("KHOURYBOT - Automated Trading 🤖")
+    st.title("KHOURYBOT - روبوت التداول الآلي 🤖")
 
     if 'is_authenticated' not in st.session_state: st.session_state.is_authenticated = False
     if 'user_id' not in st.session_state: st.session_state.user_id = None
@@ -331,11 +331,11 @@ def main():
     st.session_state.user_id = get_or_create_device_id_with_cookie()
 
     if not st.session_state.is_authenticated:
-        st.header("Log in to Your Account")
+        st.header("تسجيل الدخول إلى حسابك")
         if st.session_state.user_id and is_user_allowed(st.session_state.user_id):
-            st.session_state.is_authenticated = True; st.success("Your device has been activated! Redirecting to settings..."); st.balloons(); st.rerun()
+            st.session_state.is_authenticated = True; st.success("تم تفعيل جهازك بنجاح! يتم الآن توجيهك إلى الإعدادات..."); st.balloons(); st.rerun()
         else:
-            st.warning("Your device has not been activated yet. To activate the bot, please send this ID to the bot administrator:"); st.code(st.session_state.user_id); st.info("After activation, simply refresh this page to continue.")
+            st.warning("لم يتم تفعيل جهازك بعد. لتفعيل الروبوت، يرجى إرسال هذا المعرف إلى المسؤول:"); st.code(st.session_state.user_id); st.info("بعد التفعيل، ما عليك سوى تحديث هذه الصفحة للمتابعة.")
 
     else:
         bot_state = get_bot_state(st.session_state.user_id)
@@ -351,49 +351,49 @@ def main():
                 st.session_state.bot_thread.start()
             
             if not bot_state.is_trade_open:
-                status_placeholder.info("Analyzing...")
+                status_placeholder.info("جاري التحليل...")
                 now = datetime.now()
                 last_action_time = bot_state.last_action_time if bot_state.last_action_time else now
                 seconds_since_last_action = (now - last_action_time).total_seconds()
                 seconds_left = max(0, 60 - seconds_since_last_action)
-                timer_placeholder.metric("Next action in", f"{int(seconds_left)}s")
+                timer_placeholder.metric("الخطوة التالية خلال", f"{int(seconds_left)}s")
             else:
-                status_placeholder.info("Waiting for trade result..."); timer_placeholder.empty()
+                status_placeholder.info("في انتظار نتيجة الصفقة..."); timer_placeholder.empty()
         else:
             if st.session_state.bot_thread and st.session_state.bot_thread.is_alive():
-                status_placeholder.warning("Stopping bot...")
+                status_placeholder.warning("جاري إيقاف الروبوت...")
             else:
                 status_placeholder.empty(); timer_placeholder.empty()
 
         if st.session_state.page == 'inputs':
-            st.header("1. Bot Settings")
-            user_token = st.text_input("Enter your Deriv API token:", type="password", key="api_token_input", value=bot_state.user_token if bot_state and bot_state.user_token else "")
-            base_amount = st.number_input("Base Amount ($)", min_value=0.5, step=0.5, value=bot_state.base_amount if bot_state else 0.5)
-            tp_target = st.number_input("Take Profit Target ($)", min_value=1.0, step=1.0, value=bot_state.tp_target if bot_state and bot_state.tp_target else 1.0)
-            max_consecutive_losses = st.number_input("Max Consecutive Losses", min_value=1, step=1, value=bot_state.max_consecutive_losses if bot_state else 5)
+            st.header("1. إعدادات الروبوت")
+            user_token = st.text_input("أدخل رمز Deriv API الخاص بك:", type="password", key="api_token_input", value=bot_state.user_token if bot_state and bot_state.user_token else "")
+            base_amount = st.number_input("المبلغ الأساسي ($)", min_value=0.5, step=0.5, value=bot_state.base_amount if bot_state else 0.5)
+            tp_target = st.number_input("هدف الربح ($)", min_value=1.0, step=1.0, value=bot_state.tp_target if bot_state and bot_state.tp_target else 1.0)
+            max_consecutive_losses = st.number_input("الحد الأقصى للخسائر المتتالية", min_value=1, step=1, value=bot_state.max_consecutive_losses if bot_state else 5)
             
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("Start Bot", type="primary"):
-                    if not user_token: st.error("Please enter a valid API token before starting the bot.")
-                    else: update_bot_state_from_ui(st.session_state.user_id, is_running=True, user_token=user_token, base_amount=base_amount, current_amount=base_amount, consecutive_losses=0, total_wins=0, total_losses=0, tp_target=tp_target, max_consecutive_losses=max_consecutive_losses); st.success("Bot started!"); st.rerun()
+                if st.button("بدء الروبوت", type="primary"):
+                    if not user_token: st.error("يرجى إدخال رمز API صحيح قبل بدء الروبوت.")
+                    else: update_bot_state_from_ui(st.session_state.user_id, is_running=True, user_token=user_token, base_amount=base_amount, current_amount=base_amount, consecutive_losses=0, total_wins=0, total_losses=0, tp_target=tp_target, max_consecutive_losses=max_consecutive_losses); st.success("تم بدء الروبوت!"); st.rerun()
             with col2:
-                if st.button("Stop Bot"): update_bot_state_from_ui(st.session_state.user_id, is_running=False); st.warning("Bot will stop soon."); st.rerun()
+                if st.button("إيقاف الروبوت"): update_bot_state_from_ui(st.session_state.user_id, is_running=False); st.warning("سيتوقف الروبوت قريباً."); st.rerun()
         
         elif st.session_state.page == 'logs':
-            st.header("2. Live Bot Logs")
-            if bot_state: st.markdown(f"*Wins: {bot_state.total_wins}* | *Losses: {bot_state.total_losses}*")
+            st.header("2. سجلات الروبوت المباشرة")
+            if bot_state: st.markdown(f"*انتصارات: {bot_state.total_wins}* | *خسائر: {bot_state.total_losses}*")
             log_records = get_logs(st.session_state.user_id)
             with st.container(height=600):
-                st.text_area("Logs", "\n".join(log_records), height=600, key="logs_textarea")
-                components.html("""<script>var textarea = parent.document.querySelector('textarea[aria-label="Logs"]'); if(textarea) {textarea.scrollTop = textarea.scrollHeight;}</script>""", height=0, width=0)
+                st.text_area("السجلات", "\n".join(log_records), height=600, key="logs_textarea")
+                components.html("""<script>var textarea = parent.document.querySelector('textarea[aria-label="السجلات"]'); if(textarea) {textarea.scrollTop = textarea.scrollHeight;}</script>""", height=0, width=0)
         
         st.markdown("---")
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("Settings"): st.session_state.page = 'inputs'; st.rerun()
+            if st.button("الإعدادات"): st.session_state.page = 'inputs'; st.rerun()
         with col2:
-            if st.button("Logs"): st.session_state.page = 'logs'; st.rerun()
+            if st.button("السجلات"): st.session_state.page = 'logs'; st.rerun()
         
         if bot_state and bot_state.is_running: import time; time.sleep(1); st.rerun()
 
