@@ -13,11 +13,9 @@ import time
 import numpy as np
 import threading
 import collections
-# تم تصحيح أمر الاستيراد هنا
-from streamlit_cookies_manager.manager import CookiesManager
 
 # --- إعداد قاعدة البيانات ---
-DATABASE_URL = "postgresql://khourybot_db_user:wlVAwKwLhfzzH9HFsRMNo3IOo4dX6DYm@dpg-d2smi46r433s73frbbcg-a/khourybot_db"
+DATABASE_URL = "postgresql://khourybot_db_user:wlVAwKwLhfzzH9HFsRMNoo4dX6DYm@dpg-d2smi46r433s73frbbcg-a/khourybot_db"
 engine = sa.create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
 Base = declarative_base()
@@ -52,10 +50,34 @@ class Device(Base):
     __tablename__ = 'devices'
     id = sa.Column(sa.Integer, primary_key=True)
     device_id = sa.Column(sa.String, unique=True, nullable=False)
+    is_allowed = sa.Column(sa.Boolean, default=False)
 
 Base.metadata.create_all(engine)
 
-# --- منطق الروبوت الأساسي ---
+def is_user_allowed(device_id):
+    session = Session()
+    try:
+        device = session.query(Device).filter_by(device_id=device_id).first()
+        if device:
+            return device.is_allowed
+        return False
+    finally:
+        session.close()
+
+def get_or_create_device_id():
+    session = Session()
+    try:
+        new_device_id = str(uuid.uuid4())
+        device = session.query(Device).filter_by(device_id=new_device_id).first()
+        if not device:
+            new_device = Device(device_id=new_device_id)
+            session.add(new_device)
+            session.commit()
+            return new_device_id, True
+        return new_device_id, False
+    finally:
+        session.close()
+
 def log_message(device_id, message):
     session = Session()
     try:
@@ -198,7 +220,6 @@ def get_balance(ws, device_id):
         return None
     except Exception as e: log_message(device_id, f"❌ Exception in get_balance: {e}"); return None
 
-# --- حلقة الروبوت الرئيسية لمستخدم واحد ---
 def run_bot_for_user(device_id):
     log_message(device_id, "🟢 بدأ تشغيل الروبوت لهذا المستخدم.")
     while True:
@@ -275,32 +296,6 @@ def run_bot_for_user(device_id):
         finally:
             if ws and ws.connected: ws.close()
 
-
-# --- واجهة Streamlit ---
-def get_or_create_device_id_with_cookie():
-    cookies = CookiesManager()
-    if not cookies.ready():
-        st.stop()
-    
-    device_id = cookies.get('device_id')
-    if device_id:
-        return device_id
-    else:
-        new_device_id = str(uuid.uuid4())
-        cookies.set('device_id', new_device_id)
-        cookies.save()
-        return new_device_id
-
-def is_user_allowed(user_id):
-    ALLOWED_USERS_FILE = 'user_ids.txt'
-    try:
-        with open(ALLOWED_USERS_FILE, 'r') as f:
-            allowed_ids = {line.strip() for line in f}
-            if user_id in allowed_ids: return True
-    except FileNotFoundError: st.error(f"خطأ: لم يتم العثور على '{ALLOWED_USERS_FILE}'. يرجى إنشاء هذا الملف بقائمة من معرفات المستخدم المسموح بها."); return False
-    except Exception as e: st.error(f"خطأ في قراءة '{ALLOWED_USERS_FILE}': {e}"); return False
-    return False
-
 def update_bot_state_from_ui(device_id, **kwargs):
     session = Session()
     try:
@@ -326,25 +321,46 @@ def main():
 
     if 'is_authenticated' not in st.session_state: st.session_state.is_authenticated = False
     if 'user_id' not in st.session_state: st.session_state.user_id = None
-    if 'page' not in st.session_state: st.session_state.page = 'inputs'
+    if 'page' not in st.session_state: st.session_state.page = 'login'
     
-    st.session_state.user_id = get_or_create_device_id_with_cookie()
-
-    if not st.session_state.is_authenticated:
+    if st.session_state.page == 'login':
         st.header("تسجيل الدخول إلى حسابك")
-        if st.session_state.user_id and is_user_allowed(st.session_state.user_id):
-            st.session_state.is_authenticated = True; st.success("تم تفعيل جهازك بنجاح! يتم الآن توجيهك إلى الإعدادات..."); st.balloons(); st.rerun()
-        else:
-            st.warning("لم يتم تفعيل جهازك بعد. لتفعيل الروبوت، يرجى إرسال هذا المعرف إلى المسؤول:"); st.code(st.session_state.user_id); st.info("بعد التفعيل، ما عليك سوى تحديث هذه الصفحة للمتابعة.")
+        st.warning("لاستخدام الروبوت، يجب أن يكون لديك معرف جهاز مسجل مسبقاً.")
 
-    else:
+        login_form = st.form("login_form")
+        with login_form:
+            input_device_id = st.text_input("أدخل معرف جهازك:")
+            login_button = st.form_submit_button("تسجيل الدخول", type="primary")
+
+        if login_button:
+            if is_user_allowed(input_device_id):
+                st.session_state.user_id = input_device_id
+                st.session_state.is_authenticated = True
+                st.success("تم تسجيل الدخول بنجاح! يتم الآن توجيهك إلى الإعدادات.")
+                st.balloons()
+                st.session_state.page = 'inputs'
+                st.rerun()
+            else:
+                st.error("المعرف الذي أدخلته غير صالح أو غير مسموح به. يرجى التحقق مرة أخرى.")
+
+        if st.button("ليس لديك معرف؟ اضغط هنا للحصول على واحد."):
+            new_device_id, is_new = get_or_create_device_id()
+            if is_new:
+                st.info(f"تم إنشاء معرف جهاز جديد لك. يرجى نسخ هذا المعرف وإرساله للمسؤول لتفعيله:")
+                st.code(new_device_id)
+                st.warning("بمجرد التفعيل، استخدم هذا المعرف لتسجيل الدخول.")
+            else:
+                st.info("لديك بالفعل معرف جهاز. يرجى التواصل مع المسؤول للتفعيل.")
+    
+    elif st.session_state.is_authenticated:
         bot_state = get_bot_state(st.session_state.user_id)
         if not bot_state: update_bot_state_from_ui(st.session_state.user_id)
         bot_state = get_bot_state(st.session_state.user_id)
         
         if 'bot_thread' not in st.session_state: st.session_state.bot_thread = None
         
-        status_placeholder = st.empty(); timer_placeholder = st.empty()
+        status_placeholder = st.empty()
+        timer_placeholder = st.empty()
         if bot_state and bot_state.is_running:
             if not st.session_state.bot_thread or not st.session_state.bot_thread.is_alive():
                 st.session_state.bot_thread = threading.Thread(target=run_bot_for_user, args=(st.session_state.user_id,), daemon=True)
@@ -358,12 +374,14 @@ def main():
                 seconds_left = max(0, 60 - seconds_since_last_action)
                 timer_placeholder.metric("الخطوة التالية خلال", f"{int(seconds_left)}s")
             else:
-                status_placeholder.info("في انتظار نتيجة الصفقة..."); timer_placeholder.empty()
+                status_placeholder.info("في انتظار نتيجة الصفقة...")
+                timer_placeholder.empty()
         else:
             if st.session_state.bot_thread and st.session_state.bot_thread.is_alive():
                 status_placeholder.warning("جاري إيقاف الروبوت...")
             else:
-                status_placeholder.empty(); timer_placeholder.empty()
+                status_placeholder.empty()
+                timer_placeholder.empty()
 
         if st.session_state.page == 'inputs':
             st.header("1. إعدادات الروبوت")
