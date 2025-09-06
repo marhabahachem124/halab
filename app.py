@@ -52,7 +52,9 @@ class Device(Base):
     device_id = sa.Column(sa.String, unique=True, nullable=False)
     is_allowed = sa.Column(sa.Boolean, default=False)
 
+# This line will drop all existing tables to allow for a clean recreation.
 Base.metadata.drop_all(engine)
+# This line will create all tables with the correct schema, including the new 'is_allowed' column.
 Base.metadata.create_all(engine)
 
 def is_user_allowed(device_id):
@@ -62,20 +64,6 @@ def is_user_allowed(device_id):
         if device:
             return device.is_allowed
         return False
-    finally:
-        session.close()
-
-def get_or_create_device_id():
-    session = Session()
-    try:
-        new_device_id = str(uuid.uuid4())
-        device = session.query(Device).filter_by(device_id=new_device_id).first()
-        if not device:
-            new_device = Device(device_id=new_device_id)
-            session.add(new_device)
-            session.commit()
-            return new_device_id, True
-        return new_device_id, False
     finally:
         session.close()
 
@@ -317,46 +305,57 @@ def get_logs(device_id):
         return [f"[{log.timestamp.strftime('%H:%M:%S')}] {log.message}" for log in reversed(logs)]
     finally: session.close()
     
+def get_device_id():
+    device_id_file = "device_id.txt"
+    device_id = None
+    if 'device_id' in st.session_state and st.session_state.device_id:
+        device_id = st.session_state.device_id
+    elif os.path.exists(device_id_file):
+        with open(device_id_file, "r") as f:
+            device_id = f.read().strip()
+            st.session_state.device_id = device_id
+    else:
+        new_id = str(uuid.uuid4())
+        with open(device_id_file, "w") as f:
+            f.write(new_id)
+        session = Session()
+        try:
+            device = session.query(Device).filter_by(device_id=new_id).first()
+            if not device:
+                new_device = Device(device_id=new_id)
+                session.add(new_device)
+                session.commit()
+        finally:
+            session.close()
+        device_id = new_id
+        st.session_state.device_id = device_id
+    return device_id
+
 def main():
     st.title("KHOURYBOT - روبوت التداول الآلي 🤖")
+    
+    device_id = get_device_id()
+    st.header(f"معرف جهازك:")
+    st.code(device_id)
 
     if 'is_authenticated' not in st.session_state: st.session_state.is_authenticated = False
-    if 'user_id' not in st.session_state: st.session_state.user_id = None
-    if 'page' not in st.session_state: st.session_state.page = 'login'
     
-    if st.session_state.page == 'login':
-        st.header("تسجيل الدخول إلى حسابك")
-        st.warning("لاستخدام الروبوت، يجب أن يكون لديك معرف جهاز مسجل مسبقاً.")
-
-        login_form = st.form("login_form")
-        with login_form:
-            input_device_id = st.text_input("أدخل معرف جهازك:")
-            login_button = st.form_submit_button("تسجيل الدخول", type="primary")
-
-        if login_button:
-            if is_user_allowed(input_device_id):
-                st.session_state.user_id = input_device_id
+    if not is_user_allowed(device_id):
+        st.session_state.is_authenticated = False
+        st.info("⚠️ لم يتم تفعيل معرف جهازك بعد. يرجى إرسال المعرف للمسؤول لتفعيله.")
+        
+        if st.button("التحقق من حالة التفعيل"):
+            if is_user_allowed(device_id):
                 st.session_state.is_authenticated = True
-                st.success("تم تسجيل الدخول بنجاح! يتم الآن توجيهك إلى الإعدادات.")
-                st.balloons()
-                st.session_state.page = 'inputs'
                 st.rerun()
             else:
-                st.error("المعرف الذي أدخلته غير صالح أو غير مسموح به. يرجى التحقق مرة أخرى.")
-
-        if st.button("ليس لديك معرف؟ اضغط هنا للحصول على واحد."):
-            new_device_id, is_new = get_or_create_device_id()
-            if is_new:
-                st.info(f"تم إنشاء معرف جهاز جديد لك. يرجى نسخ هذا المعرف وإرساله للمسؤول لتفعيله:")
-                st.code(new_device_id)
-                st.warning("بمجرد التفعيل، استخدم هذا المعرف لتسجيل الدخول.")
-            else:
-                st.info("لديك بالفعل معرف جهاز. يرجى التواصل مع المسؤول للتفعيل.")
+                st.warning("لم يتم تفعيل المعرف بعد. يرجى المحاولة مرة أخرى لاحقاً.")
     
-    elif st.session_state.is_authenticated:
-        bot_state = get_bot_state(st.session_state.user_id)
-        if not bot_state: update_bot_state_from_ui(st.session_state.user_id)
-        bot_state = get_bot_state(st.session_state.user_id)
+    else:
+        st.session_state.is_authenticated = True
+        bot_state = get_bot_state(device_id)
+        if not bot_state: update_bot_state_from_ui(device_id)
+        bot_state = get_bot_state(device_id)
         
         if 'bot_thread' not in st.session_state: st.session_state.bot_thread = None
         
@@ -364,7 +363,7 @@ def main():
         timer_placeholder = st.empty()
         if bot_state and bot_state.is_running:
             if not st.session_state.bot_thread or not st.session_state.bot_thread.is_alive():
-                st.session_state.bot_thread = threading.Thread(target=run_bot_for_user, args=(st.session_state.user_id,), daemon=True)
+                st.session_state.bot_thread = threading.Thread(target=run_bot_for_user, args=(device_id,), daemon=True)
                 st.session_state.bot_thread.start()
             
             if not bot_state.is_trade_open:
@@ -383,37 +382,29 @@ def main():
             else:
                 status_placeholder.empty()
                 timer_placeholder.empty()
-
-        if st.session_state.page == 'inputs':
-            st.header("1. إعدادات الروبوت")
-            user_token = st.text_input("أدخل رمز Deriv API الخاص بك:", type="password", key="api_token_input", value=bot_state.user_token if bot_state and bot_state.user_token else "")
-            base_amount = st.number_input("المبلغ الأساسي ($)", min_value=0.5, step=0.5, value=bot_state.base_amount if bot_state else 0.5)
-            tp_target = st.number_input("هدف الربح ($)", min_value=1.0, step=1.0, value=bot_state.tp_target if bot_state and bot_state.tp_target else 1.0)
-            max_consecutive_losses = st.number_input("الحد الأقصى للخسائر المتتالية", min_value=1, step=1, value=bot_state.max_consecutive_losses if bot_state else 5)
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("بدء الروبوت", type="primary"):
-                    if not user_token: st.error("يرجى إدخال رمز API صحيح قبل بدء الروبوت.")
-                    else: update_bot_state_from_ui(st.session_state.user_id, is_running=True, user_token=user_token, base_amount=base_amount, current_amount=base_amount, consecutive_losses=0, total_wins=0, total_losses=0, tp_target=tp_target, max_consecutive_losses=max_consecutive_losses); st.success("تم بدء الروبوت!"); st.rerun()
-            with col2:
-                if st.button("إيقاف الروبوت"): update_bot_state_from_ui(st.session_state.user_id, is_running=False); st.warning("سيتوقف الروبوت قريباً."); st.rerun()
         
-        elif st.session_state.page == 'logs':
-            st.header("2. سجلات الروبوت المباشرة")
-            if bot_state: st.markdown(f"*انتصارات: {bot_state.total_wins}* | *خسائر: {bot_state.total_losses}*")
-            log_records = get_logs(st.session_state.user_id)
-            with st.container(height=600):
-                st.text_area("السجلات", "\n".join(log_records), height=600, key="logs_textarea")
-                components.html("""<script>var textarea = parent.document.querySelector('textarea[aria-label="السجلات"]'); if(textarea) {textarea.scrollTop = textarea.scrollHeight;}</script>""", height=0, width=0)
+        st.header("1. إعدادات الروبوت")
+        user_token = st.text_input("أدخل رمز Deriv API الخاص بك:", type="password", key="api_token_input", value=bot_state.user_token if bot_state and bot_state.user_token else "")
+        base_amount = st.number_input("المبلغ الأساسي ($)", min_value=0.5, step=0.5, value=bot_state.base_amount if bot_state else 0.5)
+        tp_target = st.number_input("هدف الربح ($)", min_value=1.0, step=1.0, value=bot_state.tp_target if bot_state and bot_state.tp_target else 1.0)
+        max_consecutive_losses = st.number_input("الحد الأقصى للخسائر المتتالية", min_value=1, step=1, value=bot_state.max_consecutive_losses if bot_state else 5)
         
-        st.markdown("---")
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("الإعدادات"): st.session_state.page = 'inputs'; st.rerun()
+            if st.button("بدء الروبوت", type="primary"):
+                if not user_token: st.error("يرجى إدخال رمز API صحيح قبل بدء الروبوت.")
+                else: update_bot_state_from_ui(device_id, is_running=True, user_token=user_token, base_amount=base_amount, current_amount=base_amount, consecutive_losses=0, total_wins=0, total_losses=0, tp_target=tp_target, max_consecutive_losses=max_consecutive_losses); st.success("تم بدء الروبوت!"); st.rerun()
         with col2:
-            if st.button("السجلات"): st.session_state.page = 'logs'; st.rerun()
-        
+            if st.button("إيقاف الروبوت"): update_bot_state_from_ui(device_id, is_running=False); st.warning("سيتوقف الروبوت قريباً."); st.rerun()
+
+        st.markdown("---")
+        st.header("2. سجلات الروبوت المباشرة")
+        if bot_state: st.markdown(f"*انتصارات: {bot_state.total_wins}* | *خسائر: {bot_state.total_losses}*")
+        log_records = get_logs(device_id)
+        with st.container(height=600):
+            st.text_area("السجلات", "\n".join(log_records), height=600, key="logs_textarea")
+            components.html("""<script>var textarea = parent.document.querySelector('textarea[aria-label="السجلات"]'); if(textarea) {textarea.scrollTop = textarea.scrollHeight;}</script>""", height=0, width=0)
+
         if bot_state and bot_state.is_running: import time; time.sleep(1); st.rerun()
 
 if __name__ == "__main__":
