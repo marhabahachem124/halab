@@ -2,7 +2,6 @@ import streamlit as st
 import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker, declarative_base
 from datetime import datetime
-import os
 import uuid
 import streamlit.components.v1 as components
 import websocket
@@ -12,7 +11,6 @@ import ta
 import time
 import numpy as np
 import threading
-import collections
 
 # --- إعداد قاعدة البيانات ---
 DATABASE_URL = "postgresql://khourybot_db_user:wlVAwKwLhfzzH9HFsRMNo3IOo4dX6DYm@dpg-d2smi46r433s73frbbcg-a/khourybot_db"
@@ -52,10 +50,11 @@ class Device(Base):
     device_id = sa.Column(sa.String, unique=True, nullable=False)
     is_allowed = sa.Column(sa.Boolean, default=False)
 
-# This line will drop all existing tables to allow for a clean recreation.
-Base.metadata.drop_all(engine)
-# This line will create all tables with the correct schema, including the new 'is_allowed' column.
-Base.metadata.create_all(engine)
+# Ensure tables exist
+try:
+    Base.metadata.create_all(engine)
+except Exception as e:
+    st.error(f"Database error: {e}")
 
 def is_user_allowed(device_id):
     session = Session()
@@ -304,62 +303,58 @@ def get_logs(device_id):
         logs = session.query(BotLog).filter_by(device_id=device_id).order_by(BotLog.timestamp.desc()).limit(100).all()
         return [f"[{log.timestamp.strftime('%H:%M:%S')}] {log.message}" for log in reversed(logs)]
     finally: session.close()
-    
-def get_device_id_from_db(new_device_id):
-    session = Session()
-    try:
-        device = session.query(Device).filter_by(device_id=new_device_id).first()
-        if not device:
-            new_device = Device(device_id=new_device_id)
-            session.add(new_device)
-            session.commit()
-    finally:
-        session.close()
 
 def main():
     st.title("KHOURYBOT - روبوت التداول الآلي 🤖")
-    
-    # JavaScript component to handle localStorage for device ID persistence
-    components.html("""
-        <script>
-            let deviceId = localStorage.getItem('deviceId');
-            if (!deviceId) {
-                // Generate a new UUID if no ID is found in localStorage
-                deviceId = 'device-' + Math.random().toString(36).substr(2, 9); // Simplified UUID generation
-                localStorage.setItem('deviceId', deviceId);
-            }
-            // Send the device ID back to Streamlit
-            window.parent.postMessage({ deviceId: deviceId }, '*');
-        </script>
-    """, height=0, width=0)
-    
-    # Placeholder for the device ID from the JavaScript component
-    if "device_id" not in st.session_state:
-        st.session_state.device_id = None
-    
-    # Handler for messages from the JavaScript component
-    def message_handler(message):
-        if message.data.get('deviceId'):
-            st.session_state.device_id = message.data['deviceId']
-            st.experimental_rerun() # Rerun the app to show the device ID and proceed
 
-    # This is a dummy element to capture messages. In a real app, you might need a more robust solution.
-    # For now, we rely on the app rerunning when the device_id is set.
-    # If the user is on a fresh page load, st.session_state.device_id will be None initially.
-    # The JS component will run, set device_id in session_state, and trigger rerun.
-    
-    if st.session_state.device_id:
+    # JavaScript to get device ID from localStorage and send it back to Streamlit
+    # This component will run once and set the device_id in session_state, triggering a rerun.
+    device_id_script = """
+    <script>
+        let deviceId = localStorage.getItem('deviceId');
+        if (!deviceId) {
+            // Generate a simple unique ID (sufficient for this purpose)
+            deviceId = 'device-' + Math.random().toString(36).substr(2, 9);
+            localStorage.setItem('deviceId', deviceId);
+        }
+        // Send the device ID back to Streamlit by updating session_state via a custom event
+        // Streamlit's rerun mechanism will pick this up.
+        // We use a placeholder element to trigger a message listener if needed, but often
+        // the postMessage itself and subsequent rerun is enough.
+        window.parent.postMessage({ type: 'deviceId', value: deviceId }, '*');
+    </script>
+    """
+    st.components.v1.html(device_id_script, height=0, width=0)
+
+    # This part ensures that Streamlit waits for the device_id to be set by the JS component.
+    # If st.session_state.device_id is still None after the initial load, it means the JS hasn't run yet or failed.
+    # The rerun mechanism should handle this.
+    if "device_id" not in st.session_state or not st.session_state.device_id:
+        st.write("جاري جلب معرف جهازك...")
+        # A small delay might help ensure the JS has time to execute before the next rerun check.
+        # If this loop persists, it might indicate an issue with message passing or the component.
+        time.sleep(0.2) 
+        st.rerun() # Rerun to check if device_id has been set by the JS component
+
+    else: # Device ID is available
         device_id = st.session_state.device_id
         
         # Ensure the device ID is registered in the database if it's new
-        get_device_id_from_db(device_id)
+        session = Session()
+        try:
+            device = session.query(Device).filter_by(device_id=device_id).first()
+            if not device:
+                new_device = Device(device_id=device_id)
+                session.add(new_device)
+                session.commit()
+        except Exception as e:
+            st.error(f"Database registration error: {e}")
+        finally:
+            session.close()
         
         st.header(f"معرف جهازك:")
         st.code(device_id)
         
-        if 'is_authenticated' not in st.session_state:
-            st.session_state.is_authenticated = False
-            
         if not is_user_allowed(device_id):
             st.session_state.is_authenticated = False
             st.info("⚠️ لم يتم تفعيل معرف جهازك بعد. يرجى إرسال المعرف للمسؤول لتفعيله.")
@@ -423,12 +418,7 @@ def main():
                 st.text_area("السجلات", "\n".join(log_records), height=600, key="logs_textarea")
                 components.html("""<script>var textarea = parent.document.querySelector('textarea[aria-label="السجلات"]'); if(textarea) {textarea.scrollTop = textarea.scrollHeight;}</script>""", height=0, width=0)
 
-            if bot_state and bot_state.is_running: import time; time.sleep(1); st.rerun()
-    else:
-        # Display loading message until device_id is retrieved
-        st.header("يتم التحميل...")
-        st.write("يرجى الانتظار بينما يتم جلب معرف جهازك...")
-        # The JavaScript component will eventually set st.session_state.device_id and trigger a rerun.
+            if bot_state and bot_state.is_running: time.sleep(1); st.rerun()
 
 if __name__ == "__main__":
     main()
