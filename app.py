@@ -319,31 +319,39 @@ def get_device_id_from_db(new_device_id):
 def main():
     st.title("KHOURYBOT - روبوت التداول الآلي 🤖")
     
+    # JavaScript component to handle localStorage for device ID persistence
     components.html("""
         <script>
             let deviceId = localStorage.getItem('deviceId');
             if (!deviceId) {
-                deviceId = 'device-' + Math.random().toString(36).substr(2, 9);
+                // Generate a new UUID if no ID is found in localStorage
+                deviceId = 'device-' + Math.random().toString(36).substr(2, 9); // Simplified UUID generation
                 localStorage.setItem('deviceId', deviceId);
             }
+            // Send the device ID back to Streamlit
             window.parent.postMessage({ deviceId: deviceId }, '*');
         </script>
     """, height=0, width=0)
     
-    st.write("يتم التحميل...")
-    
+    # Placeholder for the device ID from the JavaScript component
     if "device_id" not in st.session_state:
         st.session_state.device_id = None
-        
+    
+    # Handler for messages from the JavaScript component
     def message_handler(message):
         if message.data.get('deviceId'):
             st.session_state.device_id = message.data['deviceId']
-            st.experimental_rerun()
+            st.experimental_rerun() # Rerun the app to show the device ID and proceed
 
-    st.empty().markdown("<!-- stream-events-receiver -->")
+    # This is a dummy element to capture messages. In a real app, you might need a more robust solution.
+    # For now, we rely on the app rerunning when the device_id is set.
+    # If the user is on a fresh page load, st.session_state.device_id will be None initially.
+    # The JS component will run, set device_id in session_state, and trigger rerun.
     
     if st.session_state.device_id:
         device_id = st.session_state.device_id
+        
+        # Ensure the device ID is registered in the database if it's new
         get_device_id_from_db(device_id)
         
         st.header(f"معرف جهازك:")
@@ -416,6 +424,11 @@ def main():
                 components.html("""<script>var textarea = parent.document.querySelector('textarea[aria-label="السجلات"]'); if(textarea) {textarea.scrollTop = textarea.scrollHeight;}</script>""", height=0, width=0)
 
             if bot_state and bot_state.is_running: import time; time.sleep(1); st.rerun()
+    else:
+        # Display loading message until device_id is retrieved
+        st.header("يتم التحميل...")
+        st.write("يرجى الانتظار بينما يتم جلب معرف جهازك...")
+        # The JavaScript component will eventually set st.session_state.device_id and trigger a rerun.
 
 if __name__ == "__main__":
     main()
