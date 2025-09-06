@@ -13,7 +13,8 @@ import time
 import numpy as np
 import threading
 import collections
-from streamlit_cookies_manager import CookiesManager
+# Corrected import for CookiesManager
+from streamlit_cookies_manager.manager import CookiesManager
 
 # --- Database Setup ---
 DATABASE_URL = "postgresql://khourybot_db_user:wlVAwKwLhfzzH9HFsRMNo3IOo4dX6DYm@dpg-d2smi46r433s73frbbcg-a/khourybot_db"
