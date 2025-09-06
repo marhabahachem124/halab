@@ -11,10 +11,11 @@ import pandas as pd
 import ta
 import time
 import numpy as np
-import collections
 import threading
+import collections
+from streamlit_cookies_manager import CookiesManager
 
-# --- Database Setup (WARNING: HARDCODED URL) ---
+# --- Database Setup ---
 DATABASE_URL = "postgresql://khourybot_db_user:wlVAwKwLhfzzH9HFsRMNo3IOo4dX6DYm@dpg-d2smi46r433s73frbbcg-a/khourybot_db"
 engine = sa.create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
@@ -107,9 +108,10 @@ def ticks_to_ohlc_by_count(ticks_df, tick_count):
 
 def analyse_data(data, device_id):
     try:
-        required_candles = 50;
+        required_candles = 50
         if data.empty or len(data) < required_candles: return "Neutral", 0, 0, "Insufficient data"
-        data = data.tail(required_candles).copy(); signals = []
+        data = data.tail(required_candles).copy()
+        signals = []
         def get_indicator_signal(indicator_func, default_signal="Neutral"):
             try:
                 result = indicator_func()
@@ -201,8 +203,8 @@ def run_bot_for_user(device_id):
     while True:
         state = get_bot_state(device_id)
         if not state or not state.is_running:
-            time.sleep(5)
-            continue
+            log_message(device_id, "🛑 Bot state is not running. Thread stopping.")
+            break
         
         if state.is_trade_open:
             if state.trade_start_time and (datetime.now() - state.trade_start_time).total_seconds() >= 70:
@@ -274,25 +276,19 @@ def run_bot_for_user(device_id):
 
 
 # --- Streamlit App ---
-def get_or_create_device_id():
-    if 'device_id' not in st.session_state:
-        st.session_state.device_id = str(uuid.uuid4())
-    device_id = st.session_state.device_id
-    session = Session()
-    try:
-        device = session.query(Device).filter_by(device_id=device_id).first()
-        if device:
-            return device.device_id, "retrieved"
-        else:
-            new_device = Device(device_id=device_id)
-            session.add(new_device)
-            session.commit()
-            return device_id, "created"
-    except Exception as e:
-        session.rollback()
-        return None, f"error: {e}"
-    finally:
-        session.close()
+def get_or_create_device_id_with_cookie():
+    cookies = CookiesManager()
+    if not cookies.ready():
+        st.stop()
+    
+    device_id = cookies.get('device_id')
+    if device_id:
+        return device_id
+    else:
+        new_device_id = str(uuid.uuid4())
+        cookies.set('device_id', new_device_id)
+        cookies.save()
+        return new_device_id
 
 def is_user_allowed(user_id):
     ALLOWED_USERS_FILE = 'user_ids.txt'
@@ -323,17 +319,15 @@ def get_logs(device_id):
         logs = session.query(BotLog).filter_by(device_id=device_id).order_by(BotLog.timestamp.desc()).limit(100).all()
         return [f"[{log.timestamp.strftime('%H:%M:%S')}] {log.message}" for log in reversed(logs)]
     finally: session.close()
-
-def main_app():
+    
+def main():
     st.title("KHOURYBOT - Automated Trading 🤖")
 
     if 'is_authenticated' not in st.session_state: st.session_state.is_authenticated = False
     if 'user_id' not in st.session_state: st.session_state.user_id = None
     if 'page' not in st.session_state: st.session_state.page = 'inputs'
-    if 'user_id_checked' not in st.session_state:
-        st.session_state.user_id, status = get_or_create_device_id()
-        if st.session_state.user_id is None: st.error("Could not get device ID. Please check database connection."); st.session_state.user_id_checked = True
-        else: st.session_state.user_id_checked = True
+    
+    st.session_state.user_id = get_or_create_device_id_with_cookie()
 
     if not st.session_state.is_authenticated:
         st.header("Log in to Your Account")
@@ -347,8 +341,14 @@ def main_app():
         if not bot_state: update_bot_state_from_ui(st.session_state.user_id)
         bot_state = get_bot_state(st.session_state.user_id)
         
+        if 'bot_thread' not in st.session_state: st.session_state.bot_thread = None
+        
         status_placeholder = st.empty(); timer_placeholder = st.empty()
         if bot_state and bot_state.is_running:
+            if not st.session_state.bot_thread or not st.session_state.bot_thread.is_alive():
+                st.session_state.bot_thread = threading.Thread(target=run_bot_for_user, args=(st.session_state.user_id,), daemon=True)
+                st.session_state.bot_thread.start()
+            
             if not bot_state.is_trade_open:
                 status_placeholder.info("Analyzing...")
                 now = datetime.now()
@@ -358,7 +358,11 @@ def main_app():
                 timer_placeholder.metric("Next action in", f"{int(seconds_left)}s")
             else:
                 status_placeholder.info("Waiting for trade result..."); timer_placeholder.empty()
-        else: status_placeholder.empty(); timer_placeholder.empty()
+        else:
+            if st.session_state.bot_thread and st.session_state.bot_thread.is_alive():
+                status_placeholder.warning("Stopping bot...")
+            else:
+                status_placeholder.empty(); timer_placeholder.empty()
 
         if st.session_state.page == 'inputs':
             st.header("1. Bot Settings")
@@ -371,9 +375,9 @@ def main_app():
             with col1:
                 if st.button("Start Bot", type="primary"):
                     if not user_token: st.error("Please enter a valid API token before starting the bot.")
-                    else: update_bot_state_from_ui(st.session_state.user_id, is_running=True, user_token=user_token, base_amount=base_amount, current_amount=base_amount, consecutive_losses=0, total_wins=0, total_losses=0, tp_target=tp_target, max_consecutive_losses=max_consecutive_losses); st.success("Bot started! You can close this tab."); st.rerun()
+                    else: update_bot_state_from_ui(st.session_state.user_id, is_running=True, user_token=user_token, base_amount=base_amount, current_amount=base_amount, consecutive_losses=0, total_wins=0, total_losses=0, tp_target=tp_target, max_consecutive_losses=max_consecutive_losses); st.success("Bot started!"); st.rerun()
             with col2:
-                if st.button("Stop Bot"): update_bot_state_from_ui(st.session_state.user_id, is_running=False); st.warning("Bot will stop soon. You can close this tab."); st.rerun()
+                if st.button("Stop Bot"): update_bot_state_from_ui(st.session_state.user_id, is_running=False); st.warning("Bot will stop soon."); st.rerun()
         
         elif st.session_state.page == 'logs':
             st.header("2. Live Bot Logs")
@@ -392,6 +396,5 @@ def main_app():
         
         if bot_state and bot_state.is_running: import time; time.sleep(1); st.rerun()
 
-
 if __name__ == "__main__":
-    main_app()
+    main()
