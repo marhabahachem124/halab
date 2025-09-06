@@ -305,107 +305,117 @@ def get_logs(device_id):
         return [f"[{log.timestamp.strftime('%H:%M:%S')}] {log.message}" for log in reversed(logs)]
     finally: session.close()
     
-def get_device_id():
-    device_id_file = "device_id.txt"
-    device_id = None
-    if 'device_id' in st.session_state and st.session_state.device_id:
-        device_id = st.session_state.device_id
-    elif os.path.exists(device_id_file):
-        with open(device_id_file, "r") as f:
-            device_id = f.read().strip()
-            st.session_state.device_id = device_id
-    else:
-        new_id = str(uuid.uuid4())
-        with open(device_id_file, "w") as f:
-            f.write(new_id)
-        session = Session()
-        try:
-            device = session.query(Device).filter_by(device_id=new_id).first()
-            if not device:
-                new_device = Device(device_id=new_id)
-                session.add(new_device)
-                session.commit()
-        finally:
-            session.close()
-        device_id = new_id
-        st.session_state.device_id = device_id
-    return device_id
+def get_device_id_from_db(new_device_id):
+    session = Session()
+    try:
+        device = session.query(Device).filter_by(device_id=new_device_id).first()
+        if not device:
+            new_device = Device(device_id=new_device_id)
+            session.add(new_device)
+            session.commit()
+    finally:
+        session.close()
 
 def main():
     st.title("KHOURYBOT - روبوت التداول الآلي 🤖")
     
-    device_id = get_device_id()
-    st.header(f"معرف جهازك:")
-    st.code(device_id)
+    components.html("""
+        <script>
+            let deviceId = localStorage.getItem('deviceId');
+            if (!deviceId) {
+                deviceId = 'device-' + Math.random().toString(36).substr(2, 9);
+                localStorage.setItem('deviceId', deviceId);
+            }
+            window.parent.postMessage({ deviceId: deviceId }, '*');
+        </script>
+    """, height=0, width=0)
+    
+    st.write("يتم التحميل...")
+    
+    if "device_id" not in st.session_state:
+        st.session_state.device_id = None
+        
+    def message_handler(message):
+        if message.data.get('deviceId'):
+            st.session_state.device_id = message.data['deviceId']
+            st.experimental_rerun()
 
-    if 'is_authenticated' not in st.session_state: st.session_state.is_authenticated = False
+    st.empty().markdown("<!-- stream-events-receiver -->")
     
-    if not is_user_allowed(device_id):
-        st.session_state.is_authenticated = False
-        st.info("⚠️ لم يتم تفعيل معرف جهازك بعد. يرجى إرسال المعرف للمسؤول لتفعيله.")
+    if st.session_state.device_id:
+        device_id = st.session_state.device_id
+        get_device_id_from_db(device_id)
         
-        if st.button("التحقق من حالة التفعيل"):
-            if is_user_allowed(device_id):
-                st.session_state.is_authenticated = True
-                st.rerun()
-            else:
-                st.warning("لم يتم تفعيل المعرف بعد. يرجى المحاولة مرة أخرى لاحقاً.")
-    
-    else:
-        st.session_state.is_authenticated = True
-        bot_state = get_bot_state(device_id)
-        if not bot_state: update_bot_state_from_ui(device_id)
-        bot_state = get_bot_state(device_id)
+        st.header(f"معرف جهازك:")
+        st.code(device_id)
         
-        if 'bot_thread' not in st.session_state: st.session_state.bot_thread = None
-        
-        status_placeholder = st.empty()
-        timer_placeholder = st.empty()
-        if bot_state and bot_state.is_running:
-            if not st.session_state.bot_thread or not st.session_state.bot_thread.is_alive():
-                st.session_state.bot_thread = threading.Thread(target=run_bot_for_user, args=(device_id,), daemon=True)
-                st.session_state.bot_thread.start()
+        if 'is_authenticated' not in st.session_state:
+            st.session_state.is_authenticated = False
             
-            if not bot_state.is_trade_open:
-                status_placeholder.info("جاري التحليل...")
-                now = datetime.now()
-                last_action_time = bot_state.last_action_time if bot_state.last_action_time else now
-                seconds_since_last_action = (now - last_action_time).total_seconds()
-                seconds_left = max(0, 60 - seconds_since_last_action)
-                timer_placeholder.metric("الخطوة التالية خلال", f"{int(seconds_left)}s")
-            else:
-                status_placeholder.info("في انتظار نتيجة الصفقة...")
-                timer_placeholder.empty()
+        if not is_user_allowed(device_id):
+            st.session_state.is_authenticated = False
+            st.info("⚠️ لم يتم تفعيل معرف جهازك بعد. يرجى إرسال المعرف للمسؤول لتفعيله.")
+            if st.button("التحقق من حالة التفعيل"):
+                if is_user_allowed(device_id):
+                    st.session_state.is_authenticated = True
+                    st.rerun()
+                else:
+                    st.warning("لم يتم تفعيل المعرف بعد. يرجى المحاولة مرة أخرى لاحقاً.")
         else:
-            if st.session_state.bot_thread and st.session_state.bot_thread.is_alive():
-                status_placeholder.warning("جاري إيقاف الروبوت...")
+            st.session_state.is_authenticated = True
+            bot_state = get_bot_state(device_id)
+            if not bot_state: update_bot_state_from_ui(device_id)
+            bot_state = get_bot_state(device_id)
+            
+            if 'bot_thread' not in st.session_state: st.session_state.bot_thread = None
+            
+            status_placeholder = st.empty()
+            timer_placeholder = st.empty()
+            if bot_state and bot_state.is_running:
+                if not st.session_state.bot_thread or not st.session_state.bot_thread.is_alive():
+                    st.session_state.bot_thread = threading.Thread(target=run_bot_for_user, args=(device_id,), daemon=True)
+                    st.session_state.bot_thread.start()
+                
+                if not bot_state.is_trade_open:
+                    status_placeholder.info("جاري التحليل...")
+                    now = datetime.now()
+                    last_action_time = bot_state.last_action_time if bot_state.last_action_time else now
+                    seconds_since_last_action = (now - last_action_time).total_seconds()
+                    seconds_left = max(0, 60 - seconds_since_last_action)
+                    timer_placeholder.metric("الخطوة التالية خلال", f"{int(seconds_left)}s")
+                else:
+                    status_placeholder.info("في انتظار نتيجة الصفقة...")
+                    timer_placeholder.empty()
             else:
-                status_placeholder.empty()
-                timer_placeholder.empty()
-        
-        st.header("1. إعدادات الروبوت")
-        user_token = st.text_input("أدخل رمز Deriv API الخاص بك:", type="password", key="api_token_input", value=bot_state.user_token if bot_state and bot_state.user_token else "")
-        base_amount = st.number_input("المبلغ الأساسي ($)", min_value=0.5, step=0.5, value=bot_state.base_amount if bot_state else 0.5)
-        tp_target = st.number_input("هدف الربح ($)", min_value=1.0, step=1.0, value=bot_state.tp_target if bot_state and bot_state.tp_target else 1.0)
-        max_consecutive_losses = st.number_input("الحد الأقصى للخسائر المتتالية", min_value=1, step=1, value=bot_state.max_consecutive_losses if bot_state else 5)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("بدء الروبوت", type="primary"):
-                if not user_token: st.error("يرجى إدخال رمز API صحيح قبل بدء الروبوت.")
-                else: update_bot_state_from_ui(device_id, is_running=True, user_token=user_token, base_amount=base_amount, current_amount=base_amount, consecutive_losses=0, total_wins=0, total_losses=0, tp_target=tp_target, max_consecutive_losses=max_consecutive_losses); st.success("تم بدء الروبوت!"); st.rerun()
-        with col2:
-            if st.button("إيقاف الروبوت"): update_bot_state_from_ui(device_id, is_running=False); st.warning("سيتوقف الروبوت قريباً."); st.rerun()
+                if st.session_state.bot_thread and st.session_state.bot_thread.is_alive():
+                    status_placeholder.warning("جاري إيقاف الروبوت...")
+                else:
+                    status_placeholder.empty()
+                    timer_placeholder.empty()
+            
+            st.header("1. إعدادات الروبوت")
+            user_token = st.text_input("أدخل رمز Deriv API الخاص بك:", type="password", key="api_token_input", value=bot_state.user_token if bot_state and bot_state.user_token else "")
+            base_amount = st.number_input("المبلغ الأساسي ($)", min_value=0.5, step=0.5, value=bot_state.base_amount if bot_state else 0.5)
+            tp_target = st.number_input("هدف الربح ($)", min_value=1.0, step=1.0, value=bot_state.tp_target if bot_state and bot_state.tp_target else 1.0)
+            max_consecutive_losses = st.number_input("الحد الأقصى للخسائر المتتالية", min_value=1, step=1, value=bot_state.max_consecutive_losses if bot_state else 5)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("بدء الروبوت", type="primary"):
+                    if not user_token: st.error("يرجى إدخال رمز API صحيح قبل بدء الروبوت.")
+                    else: update_bot_state_from_ui(device_id, is_running=True, user_token=user_token, base_amount=base_amount, current_amount=base_amount, consecutive_losses=0, total_wins=0, total_losses=0, tp_target=tp_target, max_consecutive_losses=max_consecutive_losses); st.success("تم بدء الروبوت!"); st.rerun()
+            with col2:
+                if st.button("إيقاف الروبوت"): update_bot_state_from_ui(device_id, is_running=False); st.warning("سيتوقف الروبوت قريباً."); st.rerun()
 
-        st.markdown("---")
-        st.header("2. سجلات الروبوت المباشرة")
-        if bot_state: st.markdown(f"*انتصارات: {bot_state.total_wins}* | *خسائر: {bot_state.total_losses}*")
-        log_records = get_logs(device_id)
-        with st.container(height=600):
-            st.text_area("السجلات", "\n".join(log_records), height=600, key="logs_textarea")
-            components.html("""<script>var textarea = parent.document.querySelector('textarea[aria-label="السجلات"]'); if(textarea) {textarea.scrollTop = textarea.scrollHeight;}</script>""", height=0, width=0)
+            st.markdown("---")
+            st.header("2. سجلات الروبوت المباشرة")
+            if bot_state: st.markdown(f"*انتصارات: {bot_state.total_wins}* | *خسائر: {bot_state.total_losses}*")
+            log_records = get_logs(device_id)
+            with st.container(height=600):
+                st.text_area("السجلات", "\n".join(log_records), height=600, key="logs_textarea")
+                components.html("""<script>var textarea = parent.document.querySelector('textarea[aria-label="السجلات"]'); if(textarea) {textarea.scrollTop = textarea.scrollHeight;}</script>""", height=0, width=0)
 
-        if bot_state and bot_state.is_running: import time; time.sleep(1); st.rerun()
+            if bot_state and bot_state.is_running: import time; time.sleep(1); st.rerun()
 
 if __name__ == "__main__":
     main()
