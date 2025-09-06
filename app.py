@@ -15,7 +15,8 @@ import threading
 import collections
 
 # --- إعداد قاعدة البيانات ---
-DATABASE_URL = "postgresql://khourybot_db_user:wlVAwKwLhfzzH9HFsRMNoo4dX6DYm@dpg-d2smi46r433s73frbbcg-a/khourybot_db"
+# لقد تم تحديث الرابط هنا باستخدام بيانات الاعتماد الصحيحة.
+DATABASE_URL = "postgresql://khourybot_db_user:wlVAwKwLhfzzH9HFsRMNo3IOo4dX6DYm@dpg-d2smi46r433s73frbbcg-a/khourybot_db"
 engine = sa.create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
 Base = declarative_base()
