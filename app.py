@@ -19,7 +19,7 @@ import streamlit.components.v1 as components
 ALLOWED_USERS_FILE = 'user_ids.txt'
 
 # --- Database Setup ---
-DATABASE_URL = "postgresql://khourybotes_db_user:HeAQEQ68txKKjTVQkDva3yaMx3npqTuw@dpg-d2uvmvogjchc73ao6060-a/khourybotes_db"
+DATABASE_URL = "postgresql://khourybot_db_user:wlVAwKwLhfzzH9HFsRMNo3IOo4dX6DYn@dpg-d2smi46r433s73frbbcg-a/khourybot_db"
 engine = sa.create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
 Base = declarative_base()
@@ -406,15 +406,6 @@ else:
                         if error_msg:
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Analysis Error: {error_msg}")
                         
-                        # New check: Last 5 ticks direction
-                        last_5_ticks = df_ticks.tail(5)
-                        last_5_signal = "Neutral"
-                        if len(last_5_ticks) == 5:
-                            if last_5_ticks['price'].iloc[-1] > last_5_ticks['price'].iloc[0]:
-                                last_5_signal = "Buy"
-                            elif last_5_ticks['price'].iloc[-1] < last_5_ticks['price'].iloc[0]:
-                                last_5_signal = "Sell"
-                        
                         # New check: Last 60 ticks direction
                         last_60_ticks = df_ticks.tail(60)
                         last_60_signal = "Neutral"
@@ -424,12 +415,12 @@ else:
                             elif last_60_ticks['price'].iloc[-1] < last_60_ticks['price'].iloc[0]:
                                 last_60_signal = "Sell"
                             
-                        # Final decision based on all three conditions
+                        # Final decision based on the two conditions
                         final_signal = "Neutral"
-                        if provisional_decision == "Buy" and last_5_signal == "Buy" and last_60_signal == "Buy":
-                            final_signal = "Sell" # INVERTED
-                        elif provisional_decision == "Sell" and last_5_signal == "Sell" and last_60_signal == "Sell":
-                            final_signal = "Buy" # INVERTED
+                        if provisional_decision == "Buy" and last_60_signal == "Sell":
+                            final_signal = "Buy" # TREND-FOLLOWING
+                        elif provisional_decision == "Sell" and last_60_signal == "Buy":
+                            final_signal = "Sell" # TREND-FOLLOWING
 
                         if final_signal in ['Buy', 'Sell']:
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡ Entering a {final_signal.upper()} trade with {round(st.session_state.current_amount, 2)}$")
