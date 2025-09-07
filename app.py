@@ -350,9 +350,7 @@ def main():
                 window.parent.postMessage({ deviceId: deviceId }, '*');
             </script>
         """, height=0, width=0)
-        # إذا لم يتم تعيين المعرف بعد، نستخدم معرفاً مؤقتاً
-        # سيتم تحديثه عند استقبال رسالة من JS
-        st.session_state.device_id = str(uuid.uuid4())
+        st.session_state.device_id = str(uuid.uuid4()) # Placeholder, will be updated by JS message
     
     device_id = st.session_state.device_id
     
