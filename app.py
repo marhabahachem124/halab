@@ -46,55 +46,10 @@ class BotLog(Base):
     timestamp = sa.Column(sa.DateTime, default=datetime.utcnow)
     message = sa.Column(sa.String, nullable=False)
 
-class Device(Base):
-    __tablename__ = 'devices'
-    id = sa.Column(sa.Integer, primary_key=True)
-    device_id = sa.Column(sa.String, unique=True, nullable=False)
-    is_allowed = sa.Column(sa.Boolean, default=False)
-
 try:
     Base.metadata.create_all(engine)
 except Exception as e:
     st.error(f"Database connection error: {e}")
-
-def sync_allowed_users_from_file():
-    """Reads device IDs from user_ids.txt and updates the database."""
-    allowed_ids = set()
-    try:
-        if os.path.exists("user_ids.txt"):
-            with open("user_ids.txt", "r") as f:
-                allowed_ids = {line.strip() for line in f if line.strip()}
-    except Exception as e:
-        st.error(f"Error reading user_ids.txt: {e}")
-        return
-
-    session = Session()
-    try:
-        devices_to_activate = session.query(Device).filter(
-            Device.device_id.in_(allowed_ids),
-            Device.is_allowed == False
-        ).all()
-        
-        for device in devices_to_activate:
-            device.is_allowed = True
-            log_message(device.device_id, "تم تفعيل الجهاز تلقائيا من ملف user_ids.txt")
-        
-        session.commit()
-    except Exception as e:
-        st.error(f"Database error during sync: {e}")
-        session.rollback()
-    finally:
-        session.close()
-
-def is_user_allowed(device_id):
-    session = Session()
-    try:
-        device = session.query(Device).filter_by(device_id=device_id).first()
-        if device:
-            return device.is_allowed
-        return False
-    finally:
-        session.close()
 
 def log_message(device_id, message):
     session = Session()
@@ -336,11 +291,8 @@ def get_logs(device_id):
 
 def main():
     st.title("KHOURYBOT - روبوت التداول الآلي 🤖")
-    
-    sync_allowed_users_from_file()
-    
-    # الحل الصحيح للحصول على معرف دائم للجهاز
-    # هذا المكون يقوم بحفظ المعرف في localStorage المتصفح وإرساله إلى Streamlit
+
+    # جلب المعرف دون الحاجة إلى التفعيل
     device_id_from_js = components.html("""
         <script>
             let deviceId = localStorage.getItem('device_id');
@@ -352,49 +304,16 @@ def main():
         </script>
     """, height=0, width=0, key="device_id_getter")
 
-    # نتحقق من وجود المعرف في st.session_state
     if 'device_id' not in st.session_state:
-        # إذا لم يكن موجوداً، نتحقق من القيمة التي أعادها مكون HTML
         if device_id_from_js and 'streamlit' in device_id_from_js and 'device_id' in device_id_from_js['streamlit']:
             st.session_state.device_id = device_id_from_js['streamlit']['device_id']
-            # إعادة التشغيل للحصول على المعرف الصحيح
             st.rerun()
         else:
-            # حل احتياطي إذا فشل الاتصال مع مكون HTML
             st.session_state.device_id = str(uuid.uuid4())
             log_message(st.session_state.device_id, "فشل جلب المعرف من المتصفح، تم إنشاء معرف مؤقت.")
     
     device_id = st.session_state.device_id
     
-    session = Session()
-    try:
-        device = session.query(Device).filter_by(device_id=device_id).first()
-        if not device:
-            new_device = Device(device_id=device_id)
-            session.add(new_device)
-            session.commit()
-            log_message(device_id, "تم تسجيل معرف جهاز جديد في قاعدة البيانات.")
-    except Exception as e:
-        st.error(f"Database error while checking/adding device: {e}")
-    finally:
-        session.close()
-
-    st.header(f"معرف جهازك:")
-    st.code(device_id)
-    
-    if not is_user_allowed(device_id):
-        st.info("⚠️ لم يتم تفعيل معرف جهازك بعد. يرجى إرسال المعرف للمسؤول لتفعيله.")
-        if st.button("التحقق من حالة التفعيل"):
-            sync_allowed_users_from_file()
-            if is_user_allowed(device_id):
-                st.session_state.is_authenticated = True
-                st.success("تم تفعيل معرف جهازك! يمكنك الآن استخدام التطبيق.")
-                st.rerun()
-            else:
-                st.warning("لم يتم تفعيل المعرف بعد. يرجى المحاولة مرة أخرى لاحقاً.")
-        return
-    
-    st.session_state.is_authenticated = True
     bot_state = get_bot_state(device_id)
     if not bot_state: update_bot_state_from_ui(device_id)
     bot_state = get_bot_state(device_id)
