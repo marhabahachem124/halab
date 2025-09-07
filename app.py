@@ -288,7 +288,7 @@ def run_bot_for_user(device_id):
                     update_bot_state(device_id, initial_balance=current_balance); log_message(device_id, f"💰 الرصيد الأولي: {current_balance}")
                 else: log_message(device_id, "❌ فشل استرداد الرصيد الأولي.")
             
-            ticks_to_request = 350; req = {"ticks_history": "R_100", "end": "latest", "count": ticks_to_request, "style": "ticks"}; ws.send(json.json.dumps(req)); tick_data = json.loads(ws.recv())
+            ticks_to_request = 350; req = {"ticks_history": "R_100", "end": "latest", "count": ticks_to_request, "style": "ticks"}; ws.send(json.dumps(req)); tick_data = json.loads(ws.recv())
             if 'history' in tick_data and tick_data['history']['prices']:
                 ticks = tick_data['history']['prices']; timestamps = tick_data['history']['times']; df_ticks = pd.DataFrame({'timestamp': timestamps, 'price': ticks})
                 ticks_per_candle = 7; candles_df = ticks_to_ohlc_by_count(df_ticks, ticks_per_candle)
@@ -339,37 +339,61 @@ def main():
     
     sync_allowed_users_from_file()
     
-    # --- جزء الحصول على المعرف الدائم من المتصفح ---
+    # ***الجزء الجديد لتحميل المعرف من localStorage***
+    # نحتاج إلى هذه المتغيرات في session_state لتتبع ما إذا كنا قد استلمنا المعرف أم لا
     if 'device_id' not in st.session_state:
-        # استخدم JavaScript لجلب المعرف من localStorage أو إنشاء واحد جديد
-        # وإرساله كرسالة إلى Streamlit
-        device_id_from_js = components.html("""
-            <script>
-                let deviceId = localStorage.getItem('deviceId');
-                if (!deviceId) {
-                    deviceId = 'device-' + Math.random().toString(36).substr(2, 9);
-                    localStorage.setItem('deviceId', deviceId);
-                }
-                // إرسال المعرف كرسالة إلى Streamlit
-                window.parent.postMessage({ 'streamlit': { 'device_id': deviceId } }, '*');
-            </script>
-        """, height=0, width=0) # تم حذف الوسيط 'key'
+        st.session_state.device_id = None # سيتم تعيينه لاحقاً
+        st.session_state.device_id_received = False # علامة لتتبع استلام المعرف
 
-        # إذا تم استلام المعرف من JavaScript، قم بتخزينه في session_state
-        # ملاحظة: قد تحتاج هذه الخطوة إلى إعادة تشغيل التطبيق (rerun)
-        # لتأكيد استلام المعرف قبل استخدامه.
-        if device_id_from_js and 'streamlit' in device_id_from_js and 'device_id' in device_id_from_js['streamlit']:
-            st.session_state.device_id = device_id_from_js['streamlit']['device_id']
-        else:
-            # إذا لم يتم استلام المعرف بعد، استخدم معرف مؤقت أو اطلب إعادة التحميل
-            # هذا يضمن أننا ننتظر حتى يتم إرسال المعرف من JS
-            st.warning("جاري تحميل معرف الجهاز...")
-            st.experimental_rerun()
-            
-    # هنا نستخدم المعرف بعد التأكد من وجوده في session_state
-    device_id = st.session_state.device_id
+    # هذا المكون يقوم بتشغيل JavaScript للحصول على المعرف من localStorage
+    # وإرساله إلى Streamlit عبر window.parent.postMessage
+    # ثم يقوم Streamlit بالاستماع لهذا الرسالة وتحديث session_state
+    components.html("""
+        <script>
+            window.addEventListener('message', (event) => {
+                // تحقق مما إذا كانت الرسالة من Source المتوقع (streamlit)
+                if (event.source && event.source.location.origin === window.location.origin) {
+                    const data = event.data;
+                    if (data && data.streamlit && data.streamlit.device_id) {
+                        const deviceId = data.streamlit.device_id;
+                        // إرسال المعرف مرة أخرى إلى Streamlit
+                        // Streamlit ستستلم هذا كقيمة للمكون
+                        // لا نحتاج لاستخدام document.body.setAttribute بعد الآن
+                    }
+                }
+            });
+
+            let deviceId = localStorage.getItem('deviceId');
+            if (!deviceId) {
+                deviceId = 'device-' + Math.random().toString(36).substr(2, 9);
+                localStorage.setItem('deviceId', deviceId);
+            }
+            // إرسال المعرف إلى Streamlit
+            window.parent.postMessage({ 'streamlit': { 'device_id': deviceId } }, '*');
+        </script>
+    """, height=0, width=0) # المكون مخفي
+
+    # Streamlit لا يعيد قيمة مباشرة من postMessage مباشرة
+    # الطريقة الأكثر موثوقية هي استخدام session_state وتحديث الصفحة
+    # سنستخدم علامة في session_state لمعرفة متى يجب تحديث الصفحة
+    if st.session_state.device_id is None and not st.session_state.device_id_received:
+        st.session_state.device_id_received = True # نميز أننا حاولنا الحصول على المعرف
+        st.rerun() # إعادة تشغيل السكربت لتلقي الرسالة (إذا استقبلها Streamlit)
     
-    # --- باقي الكود ---
+    # إذا تم استلام المعرف من JS (تم تعيينه عبر postMessage)
+    # Streamlit قد يقرأه تلقائياً إذا تم إعداده بشكل صحيح
+    # ولكن الطريقة الأكثر صرامة هي استخدام session_state كوسيط
+    if st.session_state.device_id is not None:
+        device_id = st.session_state.device_id
+    else:
+        # كحل احتياطي إذا لم يتم استلام المعرف بشكل صحيح
+        # (يجب ألا يحدث مع JS و postMessage الصحيح)
+        device_id = str(uuid.uuid4())
+        st.session_state.device_id = device_id
+        log_message(device_id, "⚠️ تم إنشاء معرف احتياطي لأن المعرف الدائم لم يتم استلامه.")
+
+    # *** نهاية الجزء الجديد ***
+    
     session = Session()
     try:
         device = session.query(Device).filter_by(device_id=device_id).first()
