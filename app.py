@@ -19,13 +19,13 @@ import streamlit.components.v1 as components
 ALLOWED_USERS_FILE = 'user_ids.txt'
 
 # --- Database Setup ---
-DATABASE_URL = "postgresql://khourybot_db_user:wlVAwKwLhfzzH9HFsRMNo3IOo4dX6DYm@dpg-d2smi46r433s73frbbcg-a/khourybot_db"
+DATABASE_URL = "postgresql://khourybot_db_user:wlVAwKwLhfzzH9HFsRMNo3IOo4dX6DYn@dpg-d2smi46r433s73frbbcg-a/khourybot_db"
 engine = sa.create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
 Base = declarative_base()
 
 class Device(Base):
-    _tablename_ = 'devices'
+    __tablename__ = 'devices'  # FIXED: Changed from _tablename_ to __tablename__
     id = sa.Column(sa.Integer, primary_key=True)
     device_id = sa.Column(sa.String, unique=True, nullable=False)
 
