@@ -12,7 +12,8 @@ import time
 import numpy as np
 import threading
 import os
-from streamlit.runtime.scriptrunner.script_run_context import get_script_run_ctx
+# تم إزالة الاستيراد التالي لأنه يسبب الخطأ في الإصدارات القديمة:
+# from streamlit.runtime.scriptrunner.script_run_context import get_script_run_ctx
 
 # --- إعداد قاعدة البيانات ---
 DATABASE_URL = "postgresql://khourybot_db_user:wlVAwKwLhfzzH9HFsRMNo3IOo4dX6DYm@dpg-d2smi46r433s73frbbcg-a/khourybot_db"
@@ -46,10 +47,20 @@ class BotLog(Base):
     timestamp = sa.Column(sa.DateTime, default=datetime.utcnow)
     message = sa.Column(sa.String, nullable=False)
 
+# لا نحتاج لقاعدة بيانات Device إذا لم نعد نستخدم المعرف الخاص
+# class Device(Base):
+#     __tablename__ = 'devices'
+#     id = sa.Column(sa.Integer, primary_key=True)
+#     device_id = sa.Column(sa.String, unique=True, nullable=False)
+#     is_allowed = sa.Column(sa.Boolean, default=False)
+
 try:
     Base.metadata.create_all(engine)
 except Exception as e:
     st.error(f"Database connection error: {e}")
+
+# تم حذف وظائف is_user_allowed و sync_allowed_users_from_file
+# تم حذف وظيفة Device من قاعدة البيانات
 
 def log_message(device_id, message):
     session = Session()
@@ -292,7 +303,7 @@ def get_logs(device_id):
 def main():
     st.title("KHOURYBOT - روبوت التداول الآلي 🤖")
 
-    # جلب المعرف دون الحاجة إلى التفعيل
+    # جلب المعرف من local storage (يبقى كما هو)
     device_id_from_js = components.html("""
         <script>
             let deviceId = localStorage.getItem('device_id');
@@ -313,6 +324,8 @@ def main():
             log_message(st.session_state.device_id, "فشل جلب المعرف من المتصفح، تم إنشاء معرف مؤقت.")
     
     device_id = st.session_state.device_id
+    
+    # لا يوجد شرط is_user_allowed أو sync_allowed_users_from_file
     
     bot_state = get_bot_state(device_id)
     if not bot_state: update_bot_state_from_ui(device_id)
