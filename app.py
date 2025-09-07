@@ -339,14 +339,26 @@ def main():
     
     sync_allowed_users_from_file()
     
-    # 🆕 تغيير الكود هنا:
-    # استخدام UUID لإنشاء معرف فريد للجلسة الحالية
-    if "device_id" not in st.session_state:
-        st.session_state.device_id = str(uuid.uuid4())
+    # 🆕 تغيير الكود هنا: استخدام JavaScript و localStorage
+    components.html("""
+        <script>
+            let deviceId = localStorage.getItem('deviceId');
+            if (!deviceId) {
+                deviceId = 'device-' + Math.random().toString(36).substr(2, 9);
+                localStorage.setItem('deviceId', deviceId);
+            }
+            window.parent.postMessage({ deviceId: deviceId }, '*');
+        </script>
+    """, height=0, width=0)
+    
+    # Check for the device ID from the posted message
+    if 'device_id' not in st.session_state:
+        st.info("جاري جلب معرف جهازك... يرجى الانتظار.")
+        st.markdown("")
+        return
     
     device_id = st.session_state.device_id
     
-    # Check if this device ID exists in the database. If not, add it.
     session = Session()
     try:
         device = session.query(Device).filter_by(device_id=device_id).first()
