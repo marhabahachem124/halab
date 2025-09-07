@@ -19,7 +19,7 @@ import streamlit.components.v1 as components
 ALLOWED_USERS_FILE = 'user_ids.txt'
 
 # --- Database Setup ---
-DATABASE_URL = "postgresql://khourybot_db_user:wlVAwKwLhfzzH9HFsRMNo3IOo4dX6DYn@dpg-d2smi46r433s73frbbcg-a/khourybot_db"
+DATABASE_URL = "postgresql://khourybotes_db_user:HeAQEQ68txKKjTVQkDva3yaMx3npqTuw@dpg-d2uvmvogjchc73ao6060-a/khourybotes_db"
 engine = sa.create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
 Base = declarative_base()
