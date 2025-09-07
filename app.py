@@ -19,6 +19,7 @@ import streamlit.components.v1 as components
 ALLOWED_USERS_FILE = 'user_ids.txt'
 
 # --- Database Setup ---
+# **تحديث رابط قاعدة البيانات**
 DATABASE_URL = "postgresql://khourybotes_db_user:HeAQEQ68txKKjTVQkDva3yaMx3npqTuw@dpg-d2uvmvogjchc73ao6060-a/khourybotes_db"
 engine = sa.create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
@@ -78,10 +79,10 @@ def get_or_create_device_id():
     """
     Retrieves the device ID from st.session_state or creates a new one and saves to the database.
     """
-    if 'device_id' not in st.session_state:
-        new_id = str(random.randint(1000000000000000, 9999999999999999))
-        st.session_state.device_id = new_id
-    
+    # Use a single, fixed ID for all devices as agreed
+    fixed_id = "static_device_id_for_all_users"
+    st.session_state.device_id = fixed_id
+
     user_id = st.session_state.device_id
 
     session = Session()
@@ -415,12 +416,12 @@ else:
                             elif last_60_ticks['price'].iloc[-1] < last_60_ticks['price'].iloc[0]:
                                 last_60_signal = "Sell"
                             
-                        # Final decision based on the two conditions
+                        # Final decision based on the two conditions (YOUR NEW LOGIC)
                         final_signal = "Neutral"
                         if provisional_decision == "Buy" and last_60_signal == "Sell":
-                            final_signal = "Buy" # TREND-FOLLOWING
+                            final_signal = "Buy" # المؤشرات صعود و 60 نقطة هبوط = ادخل صعود
                         elif provisional_decision == "Sell" and last_60_signal == "Buy":
-                            final_signal = "Sell" # TREND-FOLLOWING
+                            final_signal = "Sell" # المؤشرات هبوط و 60 نقطة صعود = ادخل هبوط
 
                         if final_signal in ['Buy', 'Sell']:
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡ Entering a {final_signal.upper()} trade with {round(st.session_state.current_amount, 2)}$")
