@@ -19,13 +19,13 @@ import streamlit.components.v1 as components
 ALLOWED_USERS_FILE = 'user_ids.txt'
 
 # --- Database Setup ---
-DATABASE_URL = "postgresql://khourybotes_db_user:HeAQEQ68txKKjTVQkDva3yaMx3npqTuw@dpg-d2uvmvogjchc73ao6060-a.oregon-postgres.render.com/khourybotes_db"
+DATABASE_URL = "postgresql://khourybot_db_user:wlVAwKwLhfzzH9HFsRMNo3IOo4dX6DYn@dpg-d2smi46r433s73frbbcg-a/khourybot_db"
 engine = sa.create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
 Base = declarative_base()
 
 class Device(Base):
-    __tablename__ = 'devices'  # FIXED: Changed from _tablename_ to __tablename__
+    __tablename__ = 'devices'
     id = sa.Column(sa.Integer, primary_key=True)
     device_id = sa.Column(sa.String, unique=True, nullable=False)
 
@@ -70,26 +70,35 @@ if 'total_wins' not in st.session_state:
     st.session_state.total_wins = 0
 if 'total_losses' not in st.session_state:
     st.session_state.total_losses = 0
+if 'device_id_checked' not in st.session_state:
+    st.session_state.device_id_checked = False
 
-# --- License Check and Device ID Generation ---
+# --- License Check and Device ID Generation (FIXED) ---
 def get_or_create_device_id():
     """
-    Retrieves the device ID from the database or creates a new one and saves it.
+    Retrieves the device ID from st.session_state or creates a new one and saves to the database.
     """
+    if 'device_id' not in st.session_state:
+        new_id = str(random.randint(1000000000000000, 9999999999999999))
+        st.session_state.device_id = new_id
+    
+    user_id = st.session_state.device_id
+
     session = Session()
     try:
-        device = session.query(Device).first()
-        if device:
-            return device.device_id, "retrieved"
-        else:
-            new_id = str(random.randint(1000000000000000, 9999999999999999))
-            new_device = Device(device_id=new_id)
+        existing_device = session.query(Device).filter_by(device_id=user_id).first()
+        
+        if not existing_device:
+            new_device = Device(device_id=user_id)
             session.add(new_device)
             session.commit()
-            return new_id, "created"
+            return user_id, "created"
+        else:
+            return user_id, "retrieved"
     except Exception as e:
         session.rollback()
-        return None, f"error: {e}"
+        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Database error: {e}")
+        return user_id, f"database_error: {e}"
     finally:
         session.close()
 
@@ -146,7 +155,6 @@ def analyse_data(data):
         data = data.tail(required_candles).copy()
         signals = []
         
-        # Helper function to safely get a signal and handle errors
         def get_indicator_signal(indicator_func, default_signal="Neutral"):
             try:
                 result = indicator_func()
@@ -156,7 +164,6 @@ def analyse_data(data):
                     return result[0].iloc[-1]
                 return None
             except Exception as e:
-                #st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error in indicator: {indicator_func._name_} - {e}")
                 return None
 
         # 1. RSI logic
@@ -248,9 +255,6 @@ def analyse_data(data):
                 provisional_decision = "Buy"
             elif sell_percentage >= 70:
                 provisional_decision = "Sell"
-
-        # Removed: log_message = f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Indicators: Buy={buy_count}, Sell={sell_count}, Total={total_indicators}"
-        # Removed: st.session_state.log_records.append(log_message)
         
         return provisional_decision, buy_count, sell_count, None
     except Exception as e:
@@ -258,7 +262,6 @@ def analyse_data(data):
         return None, 0, 0, f"An error occurred during analysis: {e}"
 
 def place_order(ws, proposal_id, amount):
-    # Round the amount to 2 decimal places as requested
     valid_amount = round(max(0.5, amount), 2)
     
     req = {
@@ -313,7 +316,7 @@ def get_balance(ws):
 # --- Main App Logic and UI ---
 st.title("KHOURYBOT - Automated Trading 🤖")
 
-# Check for 'user_id_checked' to avoid rerunning on every reload
+# Check for 'device_id_checked' to avoid rerunning on every reload
 if 'user_id_checked' not in st.session_state:
     st.session_state.user_id, status = get_or_create_device_id()
     if st.session_state.user_id is None:
@@ -431,7 +434,6 @@ else:
                         if final_signal in ['Buy', 'Sell']:
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡ Entering a {final_signal.upper()} trade with {round(st.session_state.current_amount, 2)}$")
                             
-                            # First, request a proposal to get the proposal ID.
                             proposal_req = {
                                 "proposal": 1,
                                 "amount": round(st.session_state.current_amount, 2),
@@ -449,7 +451,6 @@ else:
                             if 'proposal' in proposal_response:
                                 proposal_id = proposal_response['proposal']['id']
                                 
-                                # Now, place the order using the proposal ID.
                                 order_response = place_order(ws, proposal_id, st.session_state.current_amount)
                                 
                                 if 'buy' in order_response and 'contract_id' in order_response['buy']:
@@ -517,7 +518,6 @@ else:
                         
                         current_balance = get_balance(ws)
                         if current_balance is not None:
-                            # Find and remove the last balance log message
                             balance_logs = [l for l in st.session_state.log_records if '💰' in l]
                             if balance_logs:
                                 last_balance_log = balance_logs[-1]
@@ -593,7 +593,6 @@ else:
         st.markdown(f"*Wins: {st.session_state.total_wins}* | *Losses: {st.session_state.total_losses}*")
         with st.container(height=600):
             st.text_area("Logs", "\n".join(st.session_state.log_records), height=600, key="logs_textarea")
-            # JavaScript to auto-scroll the textarea to the bottom
             components.html(
                 """
                 <script>
