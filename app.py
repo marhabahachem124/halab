@@ -288,7 +288,7 @@ def run_bot_for_user(device_id):
                     update_bot_state(device_id, initial_balance=current_balance); log_message(device_id, f"💰 الرصيد الأولي: {current_balance}")
                 else: log_message(device_id, "❌ فشل استرداد الرصيد الأولي.")
             
-            ticks_to_request = 350; req = {"ticks_history": "R_100", "end": "latest", "count": ticks_to_request, "style": "ticks"}; ws.send(json.dumps(req)); tick_data = json.loads(ws.recv())
+            ticks_to_request = 350; req = {"ticks_history": "R_100", "end": "latest", "count": ticks_to_request, "style": "ticks"}; ws.send(json.json.dumps(req)); tick_data = json.loads(ws.recv())
             if 'history' in tick_data and tick_data['history']['prices']:
                 ticks = tick_data['history']['prices']; timestamps = tick_data['history']['times']; df_ticks = pd.DataFrame({'timestamp': timestamps, 'price': ticks})
                 ticks_per_candle = 7; candles_df = ticks_to_ohlc_by_count(df_ticks, ticks_per_candle)
@@ -339,28 +339,37 @@ def main():
     
     sync_allowed_users_from_file()
     
-    # الحل النهائي: الحصول على المعرف الدائم من المتصفح
-    # يتم إرجاع قيمة المكون كقيمة للمتغير
-    device_id_from_js = components.html("""
-        <script>
-            let deviceId = localStorage.getItem('deviceId');
-            if (!deviceId) {
-                deviceId = 'device-' + Math.random().toString(36).substr(2, 9);
-                localStorage.setItem('deviceId', deviceId);
-            }
-            window.parent.postMessage({ 'streamlit': { 'device_id': deviceId } }, '*');
-        </script>
-    """, height=0, width=0, key="device_id_getter")
+    # --- جزء الحصول على المعرف الدائم من المتصفح ---
+    if 'device_id' not in st.session_state:
+        # استخدم JavaScript لجلب المعرف من localStorage أو إنشاء واحد جديد
+        # وإرساله كرسالة إلى Streamlit
+        device_id_from_js = components.html("""
+            <script>
+                let deviceId = localStorage.getItem('deviceId');
+                if (!deviceId) {
+                    deviceId = 'device-' + Math.random().toString(36).substr(2, 9);
+                    localStorage.setItem('deviceId', deviceId);
+                }
+                // إرسال المعرف كرسالة إلى Streamlit
+                window.parent.postMessage({ 'streamlit': { 'device_id': deviceId } }, '*');
+            </script>
+        """, height=0, width=0) # تم حذف الوسيط 'key'
 
-    if device_id_from_js and 'device_id' in device_id_from_js.get('streamlit', {}):
-        device_id = device_id_from_js['streamlit']['device_id']
-        st.session_state.device_id = device_id
-    elif 'device_id' not in st.session_state:
-        # حالة احتياطية إذا فشلت الجافا سكريبت
-        st.session_state.device_id = str(uuid.uuid4())
-
+        # إذا تم استلام المعرف من JavaScript، قم بتخزينه في session_state
+        # ملاحظة: قد تحتاج هذه الخطوة إلى إعادة تشغيل التطبيق (rerun)
+        # لتأكيد استلام المعرف قبل استخدامه.
+        if device_id_from_js and 'streamlit' in device_id_from_js and 'device_id' in device_id_from_js['streamlit']:
+            st.session_state.device_id = device_id_from_js['streamlit']['device_id']
+        else:
+            # إذا لم يتم استلام المعرف بعد، استخدم معرف مؤقت أو اطلب إعادة التحميل
+            # هذا يضمن أننا ننتظر حتى يتم إرسال المعرف من JS
+            st.warning("جاري تحميل معرف الجهاز...")
+            st.experimental_rerun()
+            
+    # هنا نستخدم المعرف بعد التأكد من وجوده في session_state
     device_id = st.session_state.device_id
     
+    # --- باقي الكود ---
     session = Session()
     try:
         device = session.query(Device).filter_by(device_id=device_id).first()
