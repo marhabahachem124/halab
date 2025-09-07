@@ -5,3 +5,4 @@ ta
 sqlalchemy
 psycopg2-binary
 streamlit-cookies-manager
+Requests
