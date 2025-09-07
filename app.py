@@ -339,19 +339,26 @@ def main():
     
     sync_allowed_users_from_file()
     
-    if 'device_id' not in st.session_state:
-        components.html("""
-            <script>
-                let deviceId = localStorage.getItem('deviceId');
-                if (!deviceId) {
-                    deviceId = 'device-' + Math.random().toString(36).substr(2, 9);
-                    localStorage.setItem('deviceId', deviceId);
-                }
-                window.parent.postMessage({ deviceId: deviceId }, '*');
-            </script>
-        """, height=0, width=0)
-        st.session_state.device_id = str(uuid.uuid4()) # Placeholder, will be updated by JS message
-    
+    # الحل النهائي: الحصول على المعرف الدائم من المتصفح
+    # يتم إرجاع قيمة المكون كقيمة للمتغير
+    device_id_from_js = components.html("""
+        <script>
+            let deviceId = localStorage.getItem('deviceId');
+            if (!deviceId) {
+                deviceId = 'device-' + Math.random().toString(36).substr(2, 9);
+                localStorage.setItem('deviceId', deviceId);
+            }
+            window.parent.postMessage({ 'streamlit': { 'device_id': deviceId } }, '*');
+        </script>
+    """, height=0, width=0, key="device_id_getter")
+
+    if device_id_from_js and 'device_id' in device_id_from_js.get('streamlit', {}):
+        device_id = device_id_from_js['streamlit']['device_id']
+        st.session_state.device_id = device_id
+    elif 'device_id' not in st.session_state:
+        # حالة احتياطية إذا فشلت الجافا سكريبت
+        st.session_state.device_id = str(uuid.uuid4())
+
     device_id = st.session_state.device_id
     
     session = Session()
