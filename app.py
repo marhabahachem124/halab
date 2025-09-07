@@ -339,60 +339,66 @@ def main():
     
     sync_allowed_users_from_file()
     
-    # ***الجزء الجديد لتحميل المعرف من localStorage***
-    # نحتاج إلى هذه المتغيرات في session_state لتتبع ما إذا كنا قد استلمنا المعرف أم لا
-    if 'device_id' not in st.session_state:
-        st.session_state.device_id = None # سيتم تعيينه لاحقاً
-        st.session_state.device_id_received = False # علامة لتتبع استلام المعرف
-
-    # هذا المكون يقوم بتشغيل JavaScript للحصول على المعرف من localStorage
-    # وإرساله إلى Streamlit عبر window.parent.postMessage
-    # ثم يقوم Streamlit بالاستماع لهذا الرسالة وتحديث session_state
-    components.html("""
-        <script>
-            window.addEventListener('message', (event) => {
-                // تحقق مما إذا كانت الرسالة من Source المتوقع (streamlit)
-                if (event.source && event.source.location.origin === window.location.origin) {
-                    const data = event.data;
-                    if (data && data.streamlit && data.streamlit.device_id) {
-                        const deviceId = data.streamlit.device_id;
-                        // إرسال المعرف مرة أخرى إلى Streamlit
-                        // Streamlit ستستلم هذا كقيمة للمكون
-                        // لا نحتاج لاستخدام document.body.setAttribute بعد الآن
-                    }
-                }
-            });
-
-            let deviceId = localStorage.getItem('deviceId');
-            if (!deviceId) {
-                deviceId = 'device-' + Math.random().toString(36).substr(2, 9);
-                localStorage.setItem('deviceId', deviceId);
-            }
-            // إرسال المعرف إلى Streamlit
-            window.parent.postMessage({ 'streamlit': { 'device_id': deviceId } }, '*');
-        </script>
-    """, height=0, width=0) # المكون مخفي
-
-    # Streamlit لا يعيد قيمة مباشرة من postMessage مباشرة
-    # الطريقة الأكثر موثوقية هي استخدام session_state وتحديث الصفحة
-    # سنستخدم علامة في session_state لمعرفة متى يجب تحديث الصفحة
-    if st.session_state.device_id is None and not st.session_state.device_id_received:
-        st.session_state.device_id_received = True # نميز أننا حاولنا الحصول على المعرف
-        st.rerun() # إعادة تشغيل السكربت لتلقي الرسالة (إذا استقبلها Streamlit)
+    # آلية جلب المعرف من localStorage بشكل أكثر موثوقية
+    # نستخدم html لإنشاء جزء صغير من DOM يقوم بالبحث في localStorage
+    # ثم نرسل القيمة إلى Streamlit عبر postMessage
+    # Streamlit يستقبل هذه الرسالة ويخزن المعرف في session_state
     
-    # إذا تم استلام المعرف من JS (تم تعيينه عبر postMessage)
-    # Streamlit قد يقرأه تلقائياً إذا تم إعداده بشكل صحيح
-    # ولكن الطريقة الأكثر صرامة هي استخدام session_state كوسيط
-    if st.session_state.device_id is not None:
-        device_id = st.session_state.device_id
-    else:
-        # كحل احتياطي إذا لم يتم استلام المعرف بشكل صحيح
-        # (يجب ألا يحدث مع JS و postMessage الصحيح)
-        device_id = str(uuid.uuid4())
-        st.session_state.device_id = device_id
-        log_message(device_id, "⚠️ تم إنشاء معرف احتياطي لأن المعرف الدائم لم يتم استلامه.")
+    # إذا لم يكن المعرف موجوداً في session_state، نحاول جلبه من localStorage
+    if 'device_id' not in st.session_state:
+        # هذا الكود سيتم تنفيذه في المتصفح (JavaScript)
+        # ويقوم بإرجاع المعرف إلى Streamlit
+        device_id_from_js = components.html("""
+            <script>
+                let deviceId = localStorage.getItem('deviceId');
+                if (!deviceId) {
+                    // إذا لم يكن موجوداً، ننشئ واحداً جديداً ونخزنه
+                    deviceId = 'device-' + Math.random().toString(36).substr(2, 9);
+                    localStorage.setItem('deviceId', deviceId);
+                }
+                // نرسل المعرف إلى Streamlit
+                // نستخدم 'streamlit' كمعرف للرسالة لتجنب التعارض
+                window.parent.postMessage({ 'streamlit': { 'device_id': deviceId } }, '*');
+            </script>
+        """, height=0, width=0) # نجعله مخفياً وغير مرئي
+        
+        # Streamlit لا يعيد قيمة مباشرة من components.html بهذه الطريقة
+        # نحتاج لانتظار الرسالة. سنستخدم session_state كعلامة.
+        if 'waiting_for_device_id' not in st.session_state:
+            st.session_state.waiting_for_device_id = True
+            st.session_state.device_id = None # نضبطه مؤقتاً
+            st.experimental_rerun() # إعادة التشغيل لجلب القيمة
+        
+        # إذا كنا ننتظر، نترك الشاشة فارغة أو نعرض رسالة انتظار
+        if st.session_state.waiting_for_device_id:
+            st.info("جاري تحميل المعرف الخاص بجهازك...")
+            # في هذه الحالة، الشفرة ستستمر بالعمل، وعندما يتم استقبال الرسالة من JS
+            # سنقوم بتحديث st.session_state و st.experimental_rerun() مرة أخرى
+            # لكي يعكس التحديث الجديد.
+            # حالياً، ننتظر حتى يأتي الرد من JS
+            return # نخرج من الدالة main مؤقتاً حتى تصل الرسالة
 
-    # *** نهاية الجزء الجديد ***
+    # هذا الجزء من الكود سيتم تنفيذه عندما تصل الرسالة من JavaScript
+    # أو إذا كان المعرف موجوداً بالفعل في session_state
+    if 'device_id' in st.session_state and st.session_state.device_id:
+        device_id = st.session_state.device_id
+        if st.session_state.waiting_for_device_id:
+            st.session_state.waiting_for_device_id = False # تم استلام المعرف
+            st.success(f"تم التعرف على جهازك! المعرف: {device_id}")
+            st.experimental_rerun() # إعادة التشغيل لعرض الواجهة كاملة
+
+    # إذا لم نصل إلى هنا، فهذا يعني أن المعرف لم يتم تحميله بعد.
+    # أو أن هناك مشكلة في الاستلام، فيجب التأكد من أن st.session_state.device_id موجود.
+    # في حالة عدم وجوده، سنضطر إلى إنشاء معرف جديد كحل بديل، لكن يجب أن لا يحدث ذلك مع الكود الجديد.
+
+    # إذا لم يتم ضبط device_id في session_state بشكل صحيح، فإننا نستخدم uuid كحل احتياطي
+    # (لكن هذا لن يحدث إذا كان localStorage يعمل بشكل صحيح)
+    if 'device_id' not in st.session_state or not st.session_state.device_id:
+        st.session_state.device_id = str(uuid.uuid4())
+        log_message(st.session_state.device_id, "⚠️ تم إنشاء معرف احتياطي لأن آلية localStorage فشلت.")
+        st.warning("حدث خطأ في تحميل المعرف الدائم. تم إنشاء معرف جديد لهذا الاستخدام.")
+
+    device_id = st.session_state.device_id
     
     session = Session()
     try:
