@@ -70,7 +70,6 @@ def sync_allowed_users_from_file():
 
     session = Session()
     try:
-        # Get all devices that are in the allowed list but not yet activated in the DB
         devices_to_activate = session.query(Device).filter(
             Device.device_id.in_(allowed_ids),
             Device.is_allowed == False
@@ -338,35 +337,13 @@ def get_logs(device_id):
 def main():
     st.title("KHOURYBOT - روبوت التداول الآلي 🤖")
     
-    # Run the file sync function at the beginning
     sync_allowed_users_from_file()
     
+    # 🆕 تغيير الكود هنا:
+    # استخدام UUID لإنشاء معرف فريد للجلسة الحالية
     if "device_id" not in st.session_state:
-        st.session_state.device_id = None
-
-    # JavaScript to get or set device ID from localStorage
-    components.html("""
-        <script>
-            if (!window.localStorage) {
-                // Fallback for browsers without localStorage support
-                window.parent.postMessage({ deviceId: 'device-' + Math.random().toString(36).substr(2, 9) }, '*');
-            } else {
-                let deviceId = localStorage.getItem('deviceId');
-                if (!deviceId) {
-                    deviceId = 'device-' + Math.random().toString(36).substr(2, 9);
-                    localStorage.setItem('deviceId', deviceId);
-                }
-                window.parent.postMessage({ deviceId: deviceId }, '*');
-            }
-        </script>
-    """, height=0, width=0)
-
-    # Listen for the message from JavaScript to get the device ID
-    if not st.session_state.device_id:
-        st.info("جاري جلب معرف جهازك... قد يستغرق هذا بضع ثوانٍ. يرجى الانتظار.")
-        st.markdown("")
-        return
-
+        st.session_state.device_id = str(uuid.uuid4())
+    
     device_id = st.session_state.device_id
     
     # Check if this device ID exists in the database. If not, add it.
@@ -389,7 +366,6 @@ def main():
     if not is_user_allowed(device_id):
         st.info("⚠️ لم يتم تفعيل معرف جهازك بعد. يرجى إرسال المعرف للمسؤول لتفعيله.")
         if st.button("التحقق من حالة التفعيل"):
-            # Re-sync and check status on button click
             sync_allowed_users_from_file()
             if is_user_allowed(device_id):
                 st.session_state.is_authenticated = True
