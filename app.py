@@ -339,7 +339,7 @@ def main():
     
     sync_allowed_users_from_file()
     
-    # 🆕 استخدام JavaScript لجلب المعرف وتخزينه في localStorage
+    # 🆕 تغيير الكود هنا: استدعاء JavaScript لجلب المعرف فوراً
     components.html("""
         <script>
             let deviceId = localStorage.getItem('deviceId');
@@ -351,15 +351,10 @@ def main():
         </script>
     """, height=0, width=0)
     
-    # لا يوجد شرط انتظار، يتم معالجة device_id مباشرة
-    # إذا لم يتم تعيين device_id في session_state بعد، فهذا يعني أن رسالة JavaScript لم تصل بعد
+    # إذا لم يتم تعيين device_id في session_state بعد، قم بإنشاء معرف عشوائي مؤقت
     if 'device_id' not in st.session_state:
-        # عرض رسالة شكر وتوضيح
-        st.success("شكراً لزيارتكم! جاري التحقق من معرف جهازكم...")
-        # استمر في عرض الصفحة بشكل طبيعي، وسيتم تحديث المعرف فور وصوله
-        st.markdown("") 
-        return # ارجع لتجنب المزيد من المعالجة حتى يتم الحصول على المعرف
-
+        st.session_state.device_id = str(uuid.uuid4())
+        
     device_id = st.session_state.device_id
     
     session = Session()
