@@ -12,6 +12,7 @@ import time
 import numpy as np
 import threading
 import os
+from streamlit.runtime.scriptrunner.script_run_context import get_script_run_ctx
 
 # --- إعداد قاعدة البيانات ---
 DATABASE_URL = "postgresql://khourybot_db_user:wlVAwKwLhfzzH9HFsRMNo3IOo4dX6DYm@dpg-d2smi46r433s73frbbcg-a/khourybot_db"
@@ -51,7 +52,6 @@ class Device(Base):
     device_id = sa.Column(sa.String, unique=True, nullable=False)
     is_allowed = sa.Column(sa.Boolean, default=False)
 
-# This line ensures tables are created only if they don't exist
 try:
     Base.metadata.create_all(engine)
 except Exception as e:
@@ -339,65 +339,31 @@ def main():
     
     sync_allowed_users_from_file()
     
-    # آلية جلب المعرف من localStorage بشكل أكثر موثوقية
-    # نستخدم html لإنشاء جزء صغير من DOM يقوم بالبحث في localStorage
-    # ثم نرسل القيمة إلى Streamlit عبر postMessage
-    # Streamlit يستقبل هذه الرسالة ويخزن المعرف في session_state
-    
-    # إذا لم يكن المعرف موجوداً في session_state، نحاول جلبه من localStorage
+    # الحل الصحيح للحصول على معرف دائم للجهاز
+    # هذا المكون يقوم بحفظ المعرف في localStorage المتصفح وإرساله إلى Streamlit
+    device_id_from_js = components.html("""
+        <script>
+            let deviceId = localStorage.getItem('device_id');
+            if (!deviceId) {
+                deviceId = 'device-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
+                localStorage.setItem('device_id', deviceId);
+            }
+            window.parent.postMessage({ 'streamlit': { 'device_id': deviceId } }, '*');
+        </script>
+    """, height=0, width=0, key="device_id_getter")
+
+    # نتحقق من وجود المعرف في st.session_state
     if 'device_id' not in st.session_state:
-        # هذا الكود سيتم تنفيذه في المتصفح (JavaScript)
-        # ويقوم بإرجاع المعرف إلى Streamlit
-        device_id_from_js = components.html("""
-            <script>
-                let deviceId = localStorage.getItem('deviceId');
-                if (!deviceId) {
-                    // إذا لم يكن موجوداً، ننشئ واحداً جديداً ونخزنه
-                    deviceId = 'device-' + Math.random().toString(36).substr(2, 9);
-                    localStorage.setItem('deviceId', deviceId);
-                }
-                // نرسل المعرف إلى Streamlit
-                // نستخدم 'streamlit' كمعرف للرسالة لتجنب التعارض
-                window.parent.postMessage({ 'streamlit': { 'device_id': deviceId } }, '*');
-            </script>
-        """, height=0, width=0) # نجعله مخفياً وغير مرئي
-        
-        # Streamlit لا يعيد قيمة مباشرة من components.html بهذه الطريقة
-        # نحتاج لانتظار الرسالة. سنستخدم session_state كعلامة.
-        if 'waiting_for_device_id' not in st.session_state:
-            st.session_state.waiting_for_device_id = True
-            st.session_state.device_id = None # نضبطه مؤقتاً
-            st.experimental_rerun() # إعادة التشغيل لجلب القيمة
-        
-        # إذا كنا ننتظر، نترك الشاشة فارغة أو نعرض رسالة انتظار
-        if st.session_state.waiting_for_device_id:
-            st.info("جاري تحميل المعرف الخاص بجهازك...")
-            # في هذه الحالة، الشفرة ستستمر بالعمل، وعندما يتم استقبال الرسالة من JS
-            # سنقوم بتحديث st.session_state و st.experimental_rerun() مرة أخرى
-            # لكي يعكس التحديث الجديد.
-            # حالياً، ننتظر حتى يأتي الرد من JS
-            return # نخرج من الدالة main مؤقتاً حتى تصل الرسالة
-
-    # هذا الجزء من الكود سيتم تنفيذه عندما تصل الرسالة من JavaScript
-    # أو إذا كان المعرف موجوداً بالفعل في session_state
-    if 'device_id' in st.session_state and st.session_state.device_id:
-        device_id = st.session_state.device_id
-        if st.session_state.waiting_for_device_id:
-            st.session_state.waiting_for_device_id = False # تم استلام المعرف
-            st.success(f"تم التعرف على جهازك! المعرف: {device_id}")
-            st.experimental_rerun() # إعادة التشغيل لعرض الواجهة كاملة
-
-    # إذا لم نصل إلى هنا، فهذا يعني أن المعرف لم يتم تحميله بعد.
-    # أو أن هناك مشكلة في الاستلام، فيجب التأكد من أن st.session_state.device_id موجود.
-    # في حالة عدم وجوده، سنضطر إلى إنشاء معرف جديد كحل بديل، لكن يجب أن لا يحدث ذلك مع الكود الجديد.
-
-    # إذا لم يتم ضبط device_id في session_state بشكل صحيح، فإننا نستخدم uuid كحل احتياطي
-    # (لكن هذا لن يحدث إذا كان localStorage يعمل بشكل صحيح)
-    if 'device_id' not in st.session_state or not st.session_state.device_id:
-        st.session_state.device_id = str(uuid.uuid4())
-        log_message(st.session_state.device_id, "⚠️ تم إنشاء معرف احتياطي لأن آلية localStorage فشلت.")
-        st.warning("حدث خطأ في تحميل المعرف الدائم. تم إنشاء معرف جديد لهذا الاستخدام.")
-
+        # إذا لم يكن موجوداً، نتحقق من القيمة التي أعادها مكون HTML
+        if device_id_from_js and 'streamlit' in device_id_from_js and 'device_id' in device_id_from_js['streamlit']:
+            st.session_state.device_id = device_id_from_js['streamlit']['device_id']
+            # إعادة التشغيل للحصول على المعرف الصحيح
+            st.rerun()
+        else:
+            # حل احتياطي إذا فشل الاتصال مع مكون HTML
+            st.session_state.device_id = str(uuid.uuid4())
+            log_message(st.session_state.device_id, "فشل جلب المعرف من المتصفح، تم إنشاء معرف مؤقت.")
+    
     device_id = st.session_state.device_id
     
     session = Session()
@@ -482,7 +448,7 @@ def main():
         
     if bot_state and bot_state.is_running:
          time.sleep(1)
-         st.experimental_rerun()
+         st.rerun()
 
 if __name__ == "__main__":
     main()
