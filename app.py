@@ -339,10 +339,6 @@ def main():
     
     sync_allowed_users_from_file()
     
-    # 🆕 تغيير الكود هنا:
-    # 1. تحقق مما إذا كان المعرف موجوداً في session_state.
-    # 2. إذا لم يكن، استخدم مكون HTML لتشغيله في المتصفح.
-    # 3. هذا يضمن أن المعرف يبقى ثابتاً طوال الجلسة الواحدة.
     if 'device_id' not in st.session_state:
         components.html("""
             <script>
@@ -446,7 +442,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
----
-This video on Streamlit's Session State explains how to maintain data across different page reloads, which is the core concept needed to solve the issue of a changing device ID. [Session State in Streamlit](https://www.youtube.com/watch?v=E4boI3TaDL4)
-http://googleusercontent.com/youtube_content/1
