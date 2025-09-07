@@ -2,7 +2,7 @@ streamlit
 websocket-client
 pandas
 ta
-sqlalchemy
+numpy
+requests
+SQLAlchemy
 psycopg2-binary
-streamlit-cookies-manager
-Requests
