@@ -11,6 +11,7 @@ import ta
 import time
 import numpy as np
 import threading
+import os
 
 # --- إعداد قاعدة البيانات ---
 DATABASE_URL = "postgresql://khourybot_db_user:wlVAwKwLhfzzH9HFsRMNo3IOo4dX6DYm@dpg-d2smi46r433s73frbbcg-a/khourybot_db"
@@ -50,11 +51,41 @@ class Device(Base):
     device_id = sa.Column(sa.String, unique=True, nullable=False)
     is_allowed = sa.Column(sa.Boolean, default=False)
 
-# Ensure tables exist
+# This line ensures tables are created only if they don't exist
 try:
     Base.metadata.create_all(engine)
 except Exception as e:
-    st.error(f"Database error: {e}")
+    st.error(f"Database connection error: {e}")
+
+def sync_allowed_users_from_file():
+    """Reads device IDs from user_ids.txt and updates the database."""
+    allowed_ids = set()
+    try:
+        if os.path.exists("user_ids.txt"):
+            with open("user_ids.txt", "r") as f:
+                allowed_ids = {line.strip() for line in f if line.strip()}
+    except Exception as e:
+        st.error(f"Error reading user_ids.txt: {e}")
+        return
+
+    session = Session()
+    try:
+        # Get all devices that are in the allowed list but not yet activated in the DB
+        devices_to_activate = session.query(Device).filter(
+            Device.device_id.in_(allowed_ids),
+            Device.is_allowed == False
+        ).all()
+        
+        for device in devices_to_activate:
+            device.is_allowed = True
+            log_message(device.device_id, "تم تفعيل الجهاز تلقائيا من ملف user_ids.txt")
+        
+        session.commit()
+    except Exception as e:
+        st.error(f"Database error during sync: {e}")
+        session.rollback()
+    finally:
+        session.close()
 
 def is_user_allowed(device_id):
     session = Session()
@@ -306,119 +337,123 @@ def get_logs(device_id):
 
 def main():
     st.title("KHOURYBOT - روبوت التداول الآلي 🤖")
+    
+    # Run the file sync function at the beginning
+    sync_allowed_users_from_file()
+    
+    if "device_id" not in st.session_state:
+        st.session_state.device_id = None
 
-    # JavaScript to get device ID from localStorage and send it back to Streamlit
-    # This component will run once and set the device_id in session_state, triggering a rerun.
-    device_id_script = """
-    <script>
-        let deviceId = localStorage.getItem('deviceId');
-        if (!deviceId) {
-            // Generate a simple unique ID (sufficient for this purpose)
-            deviceId = 'device-' + Math.random().toString(36).substr(2, 9);
-            localStorage.setItem('deviceId', deviceId);
-        }
-        // Send the device ID back to Streamlit by updating session_state via a custom event
-        // Streamlit's rerun mechanism will pick this up.
-        // We use a placeholder element to trigger a message listener if needed, but often
-        // the postMessage itself and subsequent rerun is enough.
-        window.parent.postMessage({ type: 'deviceId', value: deviceId }, '*');
-    </script>
-    """
-    st.components.v1.html(device_id_script, height=0, width=0)
+    # JavaScript to get or set device ID from localStorage
+    components.html("""
+        <script>
+            if (!window.localStorage) {
+                // Fallback for browsers without localStorage support
+                window.parent.postMessage({ deviceId: 'device-' + Math.random().toString(36).substr(2, 9) }, '*');
+            } else {
+                let deviceId = localStorage.getItem('deviceId');
+                if (!deviceId) {
+                    deviceId = 'device-' + Math.random().toString(36).substr(2, 9);
+                    localStorage.setItem('deviceId', deviceId);
+                }
+                window.parent.postMessage({ deviceId: deviceId }, '*');
+            }
+        </script>
+    """, height=0, width=0)
 
-    # This part ensures that Streamlit waits for the device_id to be set by the JS component.
-    # If st.session_state.device_id is still None after the initial load, it means the JS hasn't run yet or failed.
-    # The rerun mechanism should handle this.
-    if "device_id" not in st.session_state or not st.session_state.device_id:
-        st.write("جاري جلب معرف جهازك...")
-        # A small delay might help ensure the JS has time to execute before the next rerun check.
-        # If this loop persists, it might indicate an issue with message passing or the component.
-        time.sleep(0.2) 
-        st.rerun() # Rerun to check if device_id has been set by the JS component
+    # Listen for the message from JavaScript to get the device ID
+    if not st.session_state.device_id:
+        st.info("جاري جلب معرف جهازك... قد يستغرق هذا بضع ثوانٍ. يرجى الانتظار.")
+        st.markdown("")
+        return
 
-    else: # Device ID is available
-        device_id = st.session_state.device_id
-        
-        # Ensure the device ID is registered in the database if it's new
-        session = Session()
-        try:
-            device = session.query(Device).filter_by(device_id=device_id).first()
-            if not device:
-                new_device = Device(device_id=device_id)
-                session.add(new_device)
-                session.commit()
-        except Exception as e:
-            st.error(f"Database registration error: {e}")
-        finally:
-            session.close()
-        
-        st.header(f"معرف جهازك:")
-        st.code(device_id)
-        
-        if not is_user_allowed(device_id):
-            st.session_state.is_authenticated = False
-            st.info("⚠️ لم يتم تفعيل معرف جهازك بعد. يرجى إرسال المعرف للمسؤول لتفعيله.")
-            if st.button("التحقق من حالة التفعيل"):
-                if is_user_allowed(device_id):
-                    st.session_state.is_authenticated = True
-                    st.rerun()
-                else:
-                    st.warning("لم يتم تفعيل المعرف بعد. يرجى المحاولة مرة أخرى لاحقاً.")
-        else:
-            st.session_state.is_authenticated = True
-            bot_state = get_bot_state(device_id)
-            if not bot_state: update_bot_state_from_ui(device_id)
-            bot_state = get_bot_state(device_id)
-            
-            if 'bot_thread' not in st.session_state: st.session_state.bot_thread = None
-            
-            status_placeholder = st.empty()
-            timer_placeholder = st.empty()
-            if bot_state and bot_state.is_running:
-                if not st.session_state.bot_thread or not st.session_state.bot_thread.is_alive():
-                    st.session_state.bot_thread = threading.Thread(target=run_bot_for_user, args=(device_id,), daemon=True)
-                    st.session_state.bot_thread.start()
-                
-                if not bot_state.is_trade_open:
-                    status_placeholder.info("جاري التحليل...")
-                    now = datetime.now()
-                    last_action_time = bot_state.last_action_time if bot_state.last_action_time else now
-                    seconds_since_last_action = (now - last_action_time).total_seconds()
-                    seconds_left = max(0, 60 - seconds_since_last_action)
-                    timer_placeholder.metric("الخطوة التالية خلال", f"{int(seconds_left)}s")
-                else:
-                    status_placeholder.info("في انتظار نتيجة الصفقة...")
-                    timer_placeholder.empty()
+    device_id = st.session_state.device_id
+    
+    # Check if this device ID exists in the database. If not, add it.
+    session = Session()
+    try:
+        device = session.query(Device).filter_by(device_id=device_id).first()
+        if not device:
+            new_device = Device(device_id=device_id)
+            session.add(new_device)
+            session.commit()
+            log_message(device_id, "تم تسجيل معرف جهاز جديد في قاعدة البيانات.")
+    except Exception as e:
+        st.error(f"Database error while checking/adding device: {e}")
+    finally:
+        session.close()
+
+    st.header(f"معرف جهازك:")
+    st.code(device_id)
+    
+    if not is_user_allowed(device_id):
+        st.info("⚠️ لم يتم تفعيل معرف جهازك بعد. يرجى إرسال المعرف للمسؤول لتفعيله.")
+        if st.button("التحقق من حالة التفعيل"):
+            # Re-sync and check status on button click
+            sync_allowed_users_from_file()
+            if is_user_allowed(device_id):
+                st.session_state.is_authenticated = True
+                st.success("تم تفعيل معرف جهازك! يمكنك الآن استخدام التطبيق.")
+                st.rerun()
             else:
-                if st.session_state.bot_thread and st.session_state.bot_thread.is_alive():
-                    status_placeholder.warning("جاري إيقاف الروبوت...")
-                else:
-                    status_placeholder.empty()
-                    timer_placeholder.empty()
-            
-            st.header("1. إعدادات الروبوت")
-            user_token = st.text_input("أدخل رمز Deriv API الخاص بك:", type="password", key="api_token_input", value=bot_state.user_token if bot_state and bot_state.user_token else "")
-            base_amount = st.number_input("المبلغ الأساسي ($)", min_value=0.5, step=0.5, value=bot_state.base_amount if bot_state else 0.5)
-            tp_target = st.number_input("هدف الربح ($)", min_value=1.0, step=1.0, value=bot_state.tp_target if bot_state and bot_state.tp_target else 1.0)
-            max_consecutive_losses = st.number_input("الحد الأقصى للخسائر المتتالية", min_value=1, step=1, value=bot_state.max_consecutive_losses if bot_state else 5)
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("بدء الروبوت", type="primary"):
-                    if not user_token: st.error("يرجى إدخال رمز API صحيح قبل بدء الروبوت.")
-                    else: update_bot_state_from_ui(device_id, is_running=True, user_token=user_token, base_amount=base_amount, current_amount=base_amount, consecutive_losses=0, total_wins=0, total_losses=0, tp_target=tp_target, max_consecutive_losses=max_consecutive_losses); st.success("تم بدء الروبوت!"); st.rerun()
-            with col2:
-                if st.button("إيقاف الروبوت"): update_bot_state_from_ui(device_id, is_running=False); st.warning("سيتوقف الروبوت قريباً."); st.rerun()
+                st.warning("لم يتم تفعيل المعرف بعد. يرجى المحاولة مرة أخرى لاحقاً.")
+        return
+    
+    st.session_state.is_authenticated = True
+    bot_state = get_bot_state(device_id)
+    if not bot_state: update_bot_state_from_ui(device_id)
+    bot_state = get_bot_state(device_id)
+    
+    if 'bot_thread' not in st.session_state: st.session_state.bot_thread = None
+    
+    status_placeholder = st.empty()
+    timer_placeholder = st.empty()
+    if bot_state and bot_state.is_running:
+        if not st.session_state.bot_thread or not st.session_state.bot_thread.is_alive():
+            st.session_state.bot_thread = threading.Thread(target=run_bot_for_user, args=(device_id,), daemon=True)
+            st.session_state.bot_thread.start()
+        
+        if not bot_state.is_trade_open:
+            status_placeholder.info("جاري التحليل...")
+            now = datetime.now()
+            last_action_time = bot_state.last_action_time if bot_state.last_action_time else now
+            seconds_since_last_action = (now - last_action_time).total_seconds()
+            seconds_left = max(0, 60 - seconds_since_last_action)
+            timer_placeholder.metric("الخطوة التالية خلال", f"{int(seconds_left)}s")
+        else:
+            status_placeholder.info("في انتظار نتيجة الصفقة...")
+            timer_placeholder.empty()
+    else:
+        if st.session_state.bot_thread and st.session_state.bot_thread.is_alive():
+            status_placeholder.warning("جاري إيقاف الروبوت...")
+        else:
+            status_placeholder.empty()
+            timer_placeholder.empty()
+    
+    st.header("1. إعدادات الروبوت")
+    user_token = st.text_input("أدخل رمز Deriv API الخاص بك:", type="password", key="api_token_input", value=bot_state.user_token if bot_state and bot_state.user_token else "")
+    base_amount = st.number_input("المبلغ الأساسي ($)", min_value=0.5, step=0.5, value=bot_state.base_amount if bot_state else 0.5)
+    tp_target = st.number_input("هدف الربح ($)", min_value=1.0, step=1.0, value=bot_state.tp_target if bot_state and bot_state.tp_target else 1.0)
+    max_consecutive_losses = st.number_input("الحد الأقصى للخسائر المتتالية", min_value=1, step=1, value=bot_state.max_consecutive_losses if bot_state else 5)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("بدء الروبوت", type="primary"):
+            if not user_token: st.error("يرجى إدخال رمز API صحيح قبل بدء الروبوت.")
+            else: update_bot_state_from_ui(device_id, is_running=True, user_token=user_token, base_amount=base_amount, current_amount=base_amount, consecutive_losses=0, total_wins=0, total_losses=0, tp_target=tp_target, max_consecutive_losses=max_consecutive_losses); st.success("تم بدء الروبوت!"); st.rerun()
+    with col2:
+        if st.button("إيقاف الروبوت"): update_bot_state_from_ui(device_id, is_running=False); st.warning("سيتوقف الروبوت قريباً."); st.rerun()
 
-            st.markdown("---")
-            st.header("2. سجلات الروبوت المباشرة")
-            if bot_state: st.markdown(f"*انتصارات: {bot_state.total_wins}* | *خسائر: {bot_state.total_losses}*")
-            log_records = get_logs(device_id)
-            with st.container(height=600):
-                st.text_area("السجلات", "\n".join(log_records), height=600, key="logs_textarea")
-                components.html("""<script>var textarea = parent.document.querySelector('textarea[aria-label="السجلات"]'); if(textarea) {textarea.scrollTop = textarea.scrollHeight;}</script>""", height=0, width=0)
-
-            if bot_state and bot_state.is_running: time.sleep(1); st.rerun()
+    st.markdown("---")
+    st.header("2. سجلات الروبوت المباشرة")
+    if bot_state: st.markdown(f"*انتصارات: {bot_state.total_wins}* | *خسائر: {bot_state.total_losses}*")
+    log_records = get_logs(device_id)
+    with st.container(height=600):
+        st.text_area("السجلات", "\n".join(log_records), height=600, key="logs_textarea")
+        
+    if bot_state and bot_state.is_running:
+         time.sleep(1)
+         st.experimental_rerun()
 
 if __name__ == "__main__":
     main()
