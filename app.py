@@ -420,16 +420,16 @@ else:
                                 last_60_signal = "Buy"
                             elif last_60_ticks['price'].iloc[-1] < last_60_ticks['price'].iloc[0]:
                                 last_60_signal = "Sell"
-                                
+                            
                         # Final decision based on all three conditions
                         final_signal = "Neutral"
-                        if provisional_decision == "Buy" and last_5_signal == "Buy" and last_60_signal == "Sell":
-                            final_signal = "Buy" 
-                        elif provisional_decision == "Sell" and last_5_signal == "Sell" and last_60_signal == "Buy":
-                            final_signal = "Sell" 
+                        if provisional_decision == "Buy" and last_5_signal == "Buy" and last_60_signal == "Buy":
+                            final_signal = "Sell" # INVERTED
+                        elif provisional_decision == "Sell" and last_5_signal == "Sell" and last_60_signal == "Sell":
+                            final_signal = "Buy" # INVERTED
 
                         if final_signal in ['Buy', 'Sell']:
-                            #st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡ Entering a {final_signal.upper()} trade with {round(st.session_state.current_amount, 2)}$")
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡ Entering a {final_signal.upper()} trade with {round(st.session_state.current_amount, 2)}$")
                             
                             # First, request a proposal to get the proposal ID.
                             proposal_req = {
@@ -456,11 +456,11 @@ else:
                                     st.session_state.is_trade_open = True
                                     st.session_state.trade_start_time = datetime.now()
                                     st.session_state.contract_id = order_response['buy']['contract_id']
-                                    #st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Order placed.")
+                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Order placed.")
                                 elif 'error' in order_response:
                                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Order failed: {order_response['error']['message']}")
                                 else:
-                                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Unexpected order response: {order_response}")
+                                     st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Unexpected order response: {order_response}")
                             else:
                                 st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Proposal failed: {proposal_response.get('error', {}).get('message', 'Unknown error')}")
                     
@@ -503,13 +503,13 @@ else:
                             st.session_state.consecutive_losses = 0
                             st.session_state.total_wins += 1
                             st.session_state.current_amount = st.session_state.base_amount
-                            #st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🎉 Win! Profit: {profit:.2f}$")
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🎉 Win! Profit: {profit:.2f}$")
                         elif profit < 0: # This is a loss
                             st.session_state.consecutive_losses += 1
                             st.session_state.total_losses += 1
                             next_bet = st.session_state.current_amount * 2.2
                             st.session_state.current_amount = max(st.session_state.base_amount, next_bet)
-                            #st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💔 Loss! Loss: {profit:.2f}$")
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💔 Loss! Loss: {profit:.2f}$")
                         else: # Profit is 0, so no change in amount or consecutive losses
                             st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚪ No change. Profit/Loss: 0$")
                             
@@ -590,7 +590,7 @@ else:
             
     elif st.session_state.page == 'logs':
         st.header("2. Live Bot Logs")
-        st.markdown(f"Wins: {st.session_state.total_wins} | Losses: {st.session_state.total_losses}")
+        st.markdown(f"*Wins: {st.session_state.total_wins}* | *Losses: {st.session_state.total_losses}*")
         with st.container(height=600):
             st.text_area("Logs", "\n".join(st.session_state.log_records), height=600, key="logs_textarea")
             # JavaScript to auto-scroll the textarea to the bottom
