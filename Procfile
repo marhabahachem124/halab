@@ -1,1 +1,2 @@
-web: streamlit run app.py --server.port $PORT --server.enableCORS false --server.enableXsrfProtection false
+web: streamlit run app.py
+bot: python trading_bot.py
