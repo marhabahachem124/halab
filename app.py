@@ -26,21 +26,37 @@ def analyse_data(df_ticks):
     first_30 = last_60_ticks.iloc[:30]
     last_30 = last_60_ticks.iloc[30:]
     
-    # Condition 1: Average Price Comparison
-    avg_first_30 = first_30['price'].mean()
-    avg_last_30 = last_30['price'].mean()
+    # Condition 1: Check for different average directions
+    open_first_30 = first_30['price'].iloc[0]
+    close_first_30 = first_30['price'].iloc[-1]
     
-    # Condition 2: Engulfing Pattern
-    first_tick_price = first_30['price'].iloc[0]
-    last_tick_price = last_30['price'].iloc[-1]
+    open_last_30 = last_30['price'].iloc[0]
+    close_last_30 = last_30['price'].iloc[-1]
     
-    # Check for combined conditions
-    if avg_last_30 > avg_first_30 and last_tick_price > first_tick_price:
+    # Condition 2: Unified direction for all 60 ticks
+    open_60_ticks = last_60_ticks['price'].iloc[0]
+    close_60_ticks = last_60_ticks['price'].iloc[-1]
+    
+    # Check for a BUY signal
+    buy_signal_conditions = (
+        (open_first_30 > close_first_30) and      # First 30 ticks are bearish (down)
+        (open_last_30 < close_last_30) and        # Last 30 ticks are bullish (up)
+        (open_60_ticks < close_60_ticks)          # Overall 60 ticks are bullish (up)
+    )
+    
+    # Check for a SELL signal
+    sell_signal_conditions = (
+        (open_first_30 < close_first_30) and      # First 30 ticks are bullish (up)
+        (open_last_30 > close_last_30) and        # Last 30 ticks are bearish (down)
+        (open_60_ticks > close_60_ticks)          # Overall 60 ticks are bearish (down)
+    )
+
+    if buy_signal_conditions:
         return "Buy", None
-    elif avg_last_30 < avg_first_30 and last_tick_price < first_tick_price:
+    elif sell_signal_conditions:
         return "Sell", None
     else:
-        return "Neutral", "No clear combined signal."
+        return "Neutral", "No clear combined signal based on all conditions."
 
 def place_order(ws, proposal_id, amount):
     req = {"buy": proposal_id, "price": round(max(0.5, amount), 2)}
@@ -149,46 +165,40 @@ timer_placeholder = st.empty()
 
 state = st.session_state
 
-# --- Get and display balance immediately if token is present ---
-if state.user_token and state.balance_check_needed:
-    ws = None
+# --- Main Bot Loop ---
+while state.bot_running:
     try:
-        ws = websocket.WebSocket()
-        ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
-        auth_req = {"authorize": state.user_token}
-        ws.send(json.dumps(auth_req))
-        auth_response = json.loads(ws.recv())
-        if auth_response.get('error'):
-            state.bot_running = False
-        else:
-            balance = get_balance(ws)
-            if balance is not None:
-                state.initial_balance = balance
-                state.current_balance = balance
-                state.balance_check_needed = False
+        # --- Get and display balance immediately if token is present ---
+        if state.user_token and state.balance_check_needed:
+            ws = websocket.WebSocket()
+            ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
+            auth_req = {"authorize": state.user_token}
+            ws.send(json.dumps(auth_req))
+            auth_response = json.loads(ws.recv())
+            if auth_response.get('error'):
+                state.bot_running = False
             else:
-                pass
-    except Exception as e:
-        pass
-    finally:
-        if ws and ws.connected:
+                balance = get_balance(ws)
+                if balance is not None:
+                    state.initial_balance = balance
+                    state.current_balance = balance
+                    state.balance_check_needed = False
+                else:
+                    pass
             ws.close()
-    
-# --- Update UI based on current state ---
-if state.bot_running:
-    if state.current_balance is not None:
-        balance_placeholder.metric("Current Balance", f"{state.current_balance:.2f}$", 
-                                  delta=round(state.current_balance - state.initial_balance, 2), 
-                                  delta_color="normal")
-    else:
-        balance_placeholder.info("Fetching balance...")
-        st.rerun()
+        
+        # --- Update UI based on current state ---
+        if state.current_balance is not None:
+            balance_placeholder.metric("Current Balance", f"{state.current_balance:.2f}$", 
+                                      delta=round(state.current_balance - state.initial_balance, 2), 
+                                      delta_color="normal")
+        else:
+            balance_placeholder.info("Fetching balance...")
+            st.rerun()
 
-    wins_losses_placeholder.write(f"**Wins:** {state.total_wins} | **Losses:** {state.total_losses}")
-    
-    # --- Main Trading Logic ---
-    ws = None
-    try:
+        wins_losses_placeholder.write(f"**Wins:** {state.total_wins} | **Losses:** {state.total_losses}")
+        
+        # --- Main Trading Logic ---
         ws = websocket.WebSocket()
         ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
         auth_req = {"authorize": state.user_token}
@@ -290,8 +300,11 @@ if state.bot_running:
                 else:
                     pass
         
+    except Exception as e:
+        status_placeholder.error(f"❌ Connection lost. Reconnecting...")
+        time.sleep(5) # Wait for 5 seconds before retrying to connect
     finally:
-        if ws and ws.connected:
+        if 'ws' in locals() and ws.connected:
             ws.close()
     
     time.sleep(1)
