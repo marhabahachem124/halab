@@ -1,6 +1,6 @@
 import streamlit as st
 import sqlalchemy as sa
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, declarative_base # Import declarative_base here
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, ForeignKey
 from datetime import datetime
 import json
@@ -8,18 +8,17 @@ import uuid
 import os
 import time
 import streamlit.components.v1 as components
+from threading import Thread
 import websocket
 import pandas as pd
 from flask import Flask
-from threading import Thread
 
 # --- Database Setup ---
 DATABASE_URL = "postgresql://bibokh_user:Ric9h1SaTADxdkV0LgNmF8c0RPWhWYzy@dpg-d30mrpogjchc73f1tiag-a.oregon-postgres.render.com/bibokh"
 engine = sa.create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
-Base = sa.declarative_base()
+Base = declarative_base() # Use the imported declarative_base
 
-# --- Models ---
 class User(Base):
     __tablename__ = 'users'
     id = Column(Integer, primary_key=True)
@@ -44,85 +43,7 @@ class BotSession(Base):
     contract_id = Column(String, nullable=True)
     logs = Column(String, default="[]")
 
-# Create tables if they don't exist
-Base.metadata.create_all(engine)
-
-# --- Authentication & Session Management ---
-ALLOWED_EMAILS_FILE = 'user_ids.txt'
-
-def is_email_allowed(email):
-    try:
-        if os.path.exists(ALLOWED_EMAILS_FILE):
-            with open(ALLOWED_EMAILS_FILE, 'r') as f:
-                allowed_emails = {line.strip() for line in f}
-                return email in allowed_emails
-        return False
-    except Exception:
-        return False
-
-def get_or_create_user(email):
-    s = Session()
-    try:
-        user = s.query(User).filter_by(email=email).first()
-        if not user:
-            user = User(email=email)
-            s.add(user)
-            s.commit()
-            s.refresh(user)
-        return user
-    finally:
-        s.close()
-
-def get_or_create_bot_session(user):
-    s = Session()
-    try:
-        bot_session = s.query(BotSession).filter_by(user_id=user.id).first()
-        if not bot_session:
-            bot_session = BotSession(user_id=user.id)
-            s.add(bot_session)
-            s.commit()
-            s.refresh(bot_session)
-        return bot_session
-    finally:
-        s.close()
-
-def load_bot_state(session_id):
-    s = Session()
-    try:
-        bot_session = s.query(BotSession).filter_by(session_id=session_id).first()
-        if bot_session:
-            return {
-                'api_token': bot_session.api_token,
-                'base_amount': bot_session.base_amount,
-                'tp_target': bot_session.tp_target,
-                'max_consecutive_losses': bot_session.max_consecutive_losses,
-                'current_amount': bot_session.current_amount,
-                'consecutive_losses': bot_session.consecutive_losses,
-                'total_wins': bot_session.total_wins,
-                'total_losses': bot_session.total_losses,
-                'is_running': bot_session.is_running,
-                'is_trade_open': bot_session.is_trade_open,
-                'initial_balance': bot_session.initial_balance,
-                'contract_id': bot_session.contract_id,
-                'logs': json.loads(bot_session.logs) if bot_session.logs else [],
-            }
-        return {}
-    finally:
-        s.close()
-
-def update_bot_settings(session_id, new_settings):
-    s = Session()
-    try:
-        bot_session = s.query(BotSession).filter_by(session_id=session_id).first()
-        if bot_session:
-            for key, value in new_settings.items():
-                if hasattr(bot_session, key):
-                    setattr(bot_session, key, value)
-            s.commit()
-    finally:
-        s.close()
-
-# --- Trading Logic Functions ---
+# --- Trading Logic Functions (from trading_bot.py) ---
 def analyse_data(df_ticks):
     if len(df_ticks) < 60:
         return "Neutral", "Insufficient data"
@@ -152,15 +73,8 @@ def check_contract_status(ws, contract_id):
     try:
         ws.send(json.dumps(req))
         response = ws.recv() 
-        # Check if response is valid JSON and contains the expected key
-        parsed_response = json.loads(response)
-        if 'proposal_open_contract' in parsed_response:
-            return parsed_response['proposal_open_contract']
-        else:
-            print(f"Unexpected response structure from check_contract_status: {parsed_response}")
-            return None
-    except Exception as e:
-        print(f"Error in check_contract_status: {e}")
+        return json.loads(response)['proposal_open_contract']
+    except Exception:
         return None
 
 def get_balance(ws):
@@ -309,37 +223,129 @@ def main_trading_loop(bot_session_id):
                 print(f"Error for session {bot_session_id}: {e}")
             finally:
                 s.close()
-            time.sleep(1) # Small delay to prevent excessive polling
+            time.sleep(1)
     finally:
         if ws:
             ws.close()
+
+# --- Streamlit UI ---
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+if 'user_email' not in st.session_state:
+    st.session_state.user_email = None
+if 'session_id' not in st.session_state:
+    st.session_state.session_id = None
+if 'session_data' not in st.session_state:
+    st.session_state.session_data = {}
+
+# --- File-Based Authentication ---
+ALLOWED_EMAILS_FILE = 'user_ids.txt'
+
+def is_email_allowed(email):
+    try:
+        # Check if the file exists, if not, assume no emails are allowed or it's the first run
+        if not os.path.exists(ALLOWED_EMAILS_FILE):
+            # Optionally create it if it doesn't exist, or handle as access denied
+            return False # Or create an empty file and return False
+        with open(ALLOWED_EMAILS_FILE, 'r') as f:
+            allowed_emails = {line.strip() for line in f}
+            return email in allowed_emails
+    except Exception as e:
+        print(f"Error checking allowed emails: {e}")
+        return False
+
+# --- Database Session Management ---
+def get_or_create_user(email):
+    s = Session()
+    try:
+        user = s.query(User).filter_by(email=email).first()
+        if not user:
+            user = User(email=email)
+            s.add(user)
+            s.commit()
+            s.refresh(user)
+        return user
+    finally:
+        s.close()
+
+def get_or_create_bot_session(user):
+    s = Session()
+    try:
+        bot_session = s.query(BotSession).filter_by(user_id=user.id).first()
+        if not bot_session:
+            bot_session = BotSession(user_id=user.id)
+            s.add(bot_session)
+            s.commit()
+            s.refresh(bot_session)
+        return bot_session
+    finally:
+        s.close()
+
+def load_bot_state(session_id):
+    s = Session()
+    try:
+        bot_session = s.query(BotSession).filter_by(session_id=session_id).first()
+        if bot_session:
+            return {
+                'api_token': bot_session.api_token,
+                'base_amount': bot_session.base_amount,
+                'tp_target': bot_session.tp_target,
+                'max_consecutive_losses': bot_session.max_consecutive_losses,
+                'current_amount': bot_session.current_amount,
+                'consecutive_losses': bot_session.consecutive_losses,
+                'total_wins': bot_session.total_wins,
+                'total_losses': bot_session.total_losses,
+                'is_running': bot_session.is_running,
+                'is_trade_open': bot_session.is_trade_open,
+                'initial_balance': bot_session.initial_balance,
+                'contract_id': bot_session.contract_id,
+                'logs': json.loads(bot_session.logs) if bot_session.logs else [],
+            }
+        return {}
+    finally:
+        s.close()
+
+def update_bot_settings(session_id, new_settings):
+    s = Session()
+    try:
+        bot_session = s.query(BotSession).filter_by(session_id=session_id).first()
+        if bot_session:
+            for key, value in new_settings.items():
+                if hasattr(bot_session, key):
+                    setattr(bot_session, key, value)
+            s.commit()
+    finally:
+        s.close()
 
 # --- Flask App for Web Service ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Trading Bot Service is running!"
+    return "KhouryBot is running and ready!"
 
-# --- Main function to start both bot and web server ---
+# --- Main function to start bot and server ---
 def run_bot_and_server():
+    # Create tables if they don't exist
+    Base.metadata.create_all(engine)
+    print("Database tables checked/created successfully.")
+    
+    # Start the bot logic in a separate thread
     bot_thread = Thread(target=start_all_bots)
     bot_thread.daemon = True # Allows the main program to exit even if this thread is running
     bot_thread.start()
 
-    port = int(os.environ.get("PORT", 5000))
-    # Use gunicorn to run this Flask app
-    # The command below will be executed by Procfile
-    # app.run(host="0.0.0.0", port=port) 
+    # Start the Flask web server
+    port = int(os.environ.get("PORT", 5000)) # Use environment variable PORT or default to 5000
+    print(f"Starting Flask web server on port {port}")
+    app.run(host="0.0.0.0", port=port)
 
-# --- Function to start all active bots ---
 def start_all_bots():
-    s = Session()
-    try:
-        print("Database tables checked/created successfully.")
-        
-        print("Starting the main bot process.")
-        while True:
+    # This function is intended to be run in a separate thread
+    print("Starting the main bot process thread.")
+    while True:
+        s = Session()
+        try:
             active_sessions = s.query(BotSession).filter_by(is_running=True).all()
             if not active_sessions:
                 print("No active bots found. Waiting for commands...")
@@ -348,24 +354,128 @@ def start_all_bots():
             
             for session in active_sessions:
                 print(f"Starting bot for session: {session.session_id}")
-                # Ensure each bot runs in its own thread if multiple sessions are active
-                bot_instance_thread = Thread(target=main_trading_loop, args=(session.session_id,))
-                bot_instance_thread.daemon = True
-                bot_instance_thread.start()
+                # To avoid multiple threads running the same session, we can check if it's already running
+                # However, the current structure assumes main_trading_loop handles its own termination if not running
+                main_trading_loop(session.session_id)
             
-            # Wait before checking for active sessions again
+            # Sleep for a bit if no active sessions were processed or to avoid busy-waiting
             time.sleep(10) 
-    except Exception as e:
-        print(f"Error in start_all_bots: {e}")
-    finally:
-        s.close()
+        except Exception as e:
+            print(f"Error in start_all_bots loop: {e}")
+            time.sleep(10) # Wait before retrying
+        finally:
+            s.close()
 
+# --- Streamlit UI Logic ---
 if __name__ == "__main__":
-    # This block is for local testing and won't be used by gunicorn on Render
-    # If you run this file directly, it will start the bot logic and the Flask server
-    if "RENDER" not in os.environ: # Check if running on Render
-        run_bot_and_server()
-    else:
-        # On Render, gunicorn will load this app, so this part isn't directly executed
-        # but Flask app object is available.
-        pass
+    # Check if the script is being run as the main Streamlit app or by Gunicorn
+    # If the FLASK_APP environment variable is set, it means Gunicorn is running this file.
+    # Otherwise, assume it's being run by Streamlit.
+    if os.environ.get("RUN_BY_STREAMLIT") == "true":
+        st.session_state.logged_in = False
+        st.session_state.user_email = None
+        st.session_state.session_id = None
+        st.session_state.session_data = {}
+
+        if not st.session_state.logged_in:
+            st.title("KHOURYBOT Login 🤖")
+            email = st.text_input("Enter your email address:")
+            if st.button("Login", type="primary"):
+                if is_email_allowed(email):
+                    user = get_or_create_user(email)
+                    bot_session = get_or_create_bot_session(user)
+                    st.session_state.user_email = email
+                    st.session_state.session_id = bot_session.session_id
+                    st.session_state.logged_in = True
+                    st.success("Login successful! Redirecting to bot control...")
+                    st.rerun()
+                else:
+                    st.error("Access denied. Your email is not activated.")
+        else:
+            st.title("KHOURYBOT - Automated Trading 🤖")
+            st.write(f"Logged in as: **{st.session_state.user_email}**")
+            st.header("1. Bot Control")
+            
+            # Attempt to load session data. If session_id is not set yet, this will be an empty dict.
+            if st.session_state.session_id:
+                st.session_state.session_data = load_bot_state(st.session_id)
+            else:
+                st.session_state.session_data = {}
+                
+            current_status = "Running" if st.session_state.session_data.get('is_running') else "Stopped"
+            api_token_from_db = st.session_state.session_data.get('api_token')
+            is_session_configured = api_token_from_db is not None and current_status == "Running"
+
+            if not is_session_configured:
+                st.warning("Please enter your API token and settings to start a new session.")
+                api_token_input = st.text_input("Enter your Deriv API token:", type="password", value=api_token_from_db if api_token_from_db else '')
+                base_amount = st.number_input("Base Amount ($)", min_value=0.5, step=0.5, value=st.session_state.session_data.get('base_amount', 0.5))
+                tp_target = st.number_input("Take Profit Target ($)", min_value=1.0, step=1.0, value=st.session_state.session_data.get('tp_target', 1.0))
+                max_losses = st.number_input("Max Consecutive Losses", min_value=1, step=1, value=st.session_state.session_data.get('max_consecutive_losses', 5))
+            else:
+                api_token_input = api_token_from_db # Keep token hidden, use loaded value
+                base_amount = st.session_state.session_data.get('base_amount')
+                tp_target = st.session_state.session_data.get('tp_target')
+                max_losses = st.session_state.session_data.get('max_consecutive_losses')
+                initial_balance = st.session_state.session_data.get('initial_balance')
+                
+                st.write(f"**API Token:** {'********'}")
+                st.write(f"**Base Amount:** {base_amount}$")
+                st.write(f"**TP Target:** {tp_target}$")
+                st.write(f"**Max Losses:** {max_losses}")
+                if initial_balance is not None: # Check for None explicitly
+                    st.write(f"**Initial Balance:** {initial_balance:.2f}$")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                # Only allow starting if not already running and token is provided
+                start_button = st.button("Start Bot", type="primary", disabled=(current_status == 'Running' or not api_token_input))
+            with col2:
+                stop_button = st.button("Stop Bot", disabled=(current_status == 'Stopped'))
+
+            if start_button:
+                new_settings = {
+                    'is_running': True, 'api_token': api_token_input, 'base_amount': base_amount, 'tp_target': tp_target,
+                    'max_consecutive_losses': max_losses, 'current_amount': base_amount, 'consecutive_losses': 0,
+                    'total_wins': 0, 'total_losses': 0, 'initial_balance': None, 'contract_id': None,
+                    'logs': json.dumps([f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot has been started."])
+                }
+                update_bot_settings(st.session_state.session_id, new_settings)
+                st.success("Bot has been started.")
+                st.rerun()
+
+            if stop_button:
+                logs = st.session_state.session_data.get('logs', [])
+                logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 Bot stopped by user.")
+                update_bot_settings(st.session_state.session_id, {'is_running': False, 'logs': json.dumps(logs)})
+                st.warning("Bot has been stopped.")
+                st.rerun()
+
+            st.info(f"Bot Status: **{'Running' if current_status == 'Running' else 'Stopped'}**")
+            st.markdown("---")
+            st.header("2. Live Bot Logs")
+            logs = st.session_state.session_data.get('logs', [])
+            with st.container(height=600):
+                st.text_area("Logs", "\n".join(logs), height=600, key="logs_textarea")
+            
+            # Auto-refresh for logs
+            time.sleep(5)
+            st.rerun()
+
+    else: # If not run by Streamlit, assume it's Gunicorn running the Flask app
+        # Set environment variable to indicate Flask app is running
+        os.environ["RUN_BY_STREAMLIT"] = "false"
+        
+        # Gunicorn will call app:app, so we need to ensure `app` is defined and callable
+        # The Flask app instance is already created as `app = Flask(__name__)` above.
+        # The `run_bot_and_server` function is not directly called by gunicorn,
+        # it's gunicorn that imports and runs the Flask app instance named `app`.
+        # The thread for the bot logic needs to be started independently.
+        
+        # Start the bot logic in a separate thread when Gunicorn loads the app
+        bot_thread = Thread(target=start_all_bots)
+        bot_thread.daemon = True 
+        bot_thread.start()
+        
+        # Flask app is ready to be served by Gunicorn on the port provided by Render
+        pass # Gunicorn will handle the execution of the Flask app
