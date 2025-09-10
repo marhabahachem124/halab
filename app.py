@@ -1,24 +1,23 @@
-import streamlit as st
-import sqlalchemy as sa
-from sqlalchemy.orm import sessionmaker, declarative_base # Import declarative_base here
+import streamlit as st # لا يُستخدم فعلياً في هذا الكود الخاص بالبوت، لكن أبقيه إذا كنت تخطط لدمجه لاحقاً
+from sqlalchemy.orm import sessionmaker, declarative_base # تم تعديل الاستيراد هنا
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, ForeignKey
 from datetime import datetime
 import json
 import uuid
-import os
 import time
-import streamlit.components.v1 as components
-from threading import Thread
+import os
 import websocket
 import pandas as pd
 from flask import Flask
+from threading import Thread
 
 # --- Database Setup ---
 DATABASE_URL = "postgresql://bibokh_user:Ric9h1SaTADxdkV0LgNmF8c0RPWhWYzy@dpg-d30mrpogjchc73f1tiag-a.oregon-postgres.render.com/bibokh"
 engine = sa.create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
-Base = declarative_base() # Use the imported declarative_base
+Base = declarative_base() # الآن تعمل بشكل صحيح
 
+# --- Model Definitions ---
 class User(Base):
     __tablename__ = 'users'
     id = Column(Integer, primary_key=True)
@@ -43,224 +42,36 @@ class BotSession(Base):
     contract_id = Column(String, nullable=True)
     logs = Column(String, default="[]")
 
-# --- Trading Logic Functions (from trading_bot.py) ---
-def analyse_data(df_ticks):
-    if len(df_ticks) < 60:
-        return "Neutral", "Insufficient data"
-    last_60_ticks = df_ticks.tail(60).copy()
-    first_30 = last_60_ticks.iloc[:30]
-    last_30 = last_60_ticks.iloc[30:]
-    avg_first_30 = first_30['price'].mean()
-    avg_last_30 = last_30['price'].mean()
-    if avg_last_30 > avg_first_30:
-        return "Buy", None
-    elif avg_last_30 < avg_first_30:
-        return "Sell", None
-    else:
-        return "Neutral", "No clear trend in the last 60 ticks."
-
-def place_order(ws, proposal_id, amount):
-    req = {"buy": proposal_id, "price": round(max(0.5, amount), 2)}
-    try:
-        ws.send(json.dumps(req))
-        response = json.loads(ws.recv())
-        return response
-    except Exception:
-        return {"error": {"message": "Order placement failed."}}
-
-def check_contract_status(ws, contract_id):
-    req = {"proposal_open_contract": 1, "contract_id": contract_id, "subscribe": 1}
-    try:
-        ws.send(json.dumps(req))
-        response = ws.recv() 
-        return json.loads(response)['proposal_open_contract']
-    except Exception:
-        return None
-
-def get_balance(ws):
-    req = {"balance": 1, "subscribe": 1}
-    try:
-        ws.send(json.dumps(req))
-        response = json.loads(ws.recv())
-        return response.get('balance', {}).get('balance')
-    except Exception:
-        return None
-
-def main_trading_loop(bot_session_id):
-    state = {}
-    ws = None
-    try:
-        ws = websocket.WebSocket()
-        ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
-        while True:
-            s = Session()
-            try:
-                bot_session = s.query(BotSession).filter_by(session_id=bot_session_id).first()
-                if not bot_session or not bot_session.is_running:
-                    print(f"Bot for session {bot_session_id} is stopped. Exiting loop.")
-                    break
-                
-                state = {
-                    'api_token': bot_session.api_token,
-                    'base_amount': bot_session.base_amount,
-                    'tp_target': bot_session.tp_target,
-                    'max_consecutive_losses': bot_session.max_consecutive_losses,
-                    'current_amount': bot_session.current_amount,
-                    'consecutive_losses': bot_session.consecutive_losses,
-                    'total_wins': bot_session.total_wins,
-                    'total_losses': bot_session.total_losses,
-                    'is_running': bot_session.is_running,
-                    'is_trade_open': bot_session.is_trade_open,
-                    'initial_balance': bot_session.initial_balance,
-                    'contract_id': bot_session.contract_id,
-                    'logs': json.loads(bot_session.logs),
-                }
-
-                if not state.get('api_token'):
-                    time.sleep(5)
-                    continue
-
-                auth_req = {"authorize": state['api_token']}
-                ws.send(json.dumps(auth_req))
-                auth_response = json.loads(ws.recv())
-                if auth_response.get('error'):
-                    state['logs'].append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Auth failed: {auth_response['error']['message']}")
-                    s.query(BotSession).filter_by(session_id=bot_session_id).update({'logs': json.dumps(state['logs'])})
-                    s.commit()
-                    time.sleep(5)
-                    continue
-
-                if not state.get('is_trade_open'):
-                    now = datetime.now()
-                    if now.second >= 55:
-                        if state['initial_balance'] is None:
-                            current_balance = get_balance(ws)
-                            if current_balance is not None:
-                                state['initial_balance'] = current_balance
-                                state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 💰 Initial Balance: {state['initial_balance']:.2f}")
-                                s.query(BotSession).filter_by(session_id=bot_session_id).update({'initial_balance': state['initial_balance'], 'logs': json.dumps(state['logs'])})
-                                s.commit()
-                            else:
-                                state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Failed to get balance.")
-                                s.query(BotSession).filter_by(session_id=bot_session_id).update({'logs': json.dumps(state['logs'])})
-                                s.commit()
-                                time.sleep(5)
-                                continue
-
-                        req = {"ticks_history": "R_100", "end": "latest", "count": 60, "style": "ticks"}
-                        ws.send(json.dumps(req))
-                        tick_data = json.loads(ws.recv())
-                        if 'history' in tick_data and tick_data['history']['prices']:
-                            df_ticks = pd.DataFrame({'price': tick_data['history']['prices']})
-                            signal, error = analyse_data(df_ticks)
-                            if signal in ['Buy', 'Sell']:
-                                state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ➡ Entering a {signal.upper()} trade with {state['current_amount']:.2f}$")
-                                proposal_req = {"proposal": 1, "amount": round(state['current_amount'], 2), "basis": "stake", "contract_type": "CALL" if signal == 'Buy' else "PUT", "currency": "USD", "duration": 30, "duration_unit": "s", "symbol": "R_100"}
-                                ws.send(json.dumps(proposal_req))
-                                proposal_response = json.loads(ws.recv())
-                                if 'proposal' in proposal_response:
-                                    order_response = place_order(ws, proposal_response['proposal']['id'], state['current_amount'])
-                                    if 'buy' in order_response:
-                                        state['is_trade_open'] = True
-                                        state['contract_id'] = order_response['buy']['contract_id']
-                                        state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ✅ Order placed. Contract ID: {state['contract_id']}")
-                                        s.query(BotSession).filter_by(session_id=bot_session_id).update({"is_trade_open": True, "contract_id": state['contract_id'], "logs": json.dumps(state['logs'])})
-                                        s.commit()
-                                    else:
-                                        state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Order failed: {order_response.get('error', {}).get('message', 'Unknown error')}")
-                                        s.query(BotSession).filter_by(session_id=bot_session_id).update({'logs': json.dumps(state['logs'])})
-                                        s.commit()
-                                else:
-                                    state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Proposal failed: {proposal_response.get('error', {}).get('message', 'Unknown error')}")
-                                    s.query(BotSession).filter_by(session_id=bot_session_id).update({'logs': json.dumps(state['logs'])})
-                                    s.commit()
-                        else:
-                            state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ⚪ No clear signal. Waiting.")
-                            s.query(BotSession).filter_by(session_id=bot_session_id).update({'logs': json.dumps(state['logs'])})
-                            s.commit()
-
-                elif state.get('is_trade_open') and state.get('contract_id'):
-                    now = datetime.now()
-                    contract_info = check_contract_status(ws, state['contract_id'])
-                    if contract_info and contract_info.get('is_sold'):
-                        profit = contract_info.get('profit', 0)
-                        if profit > 0:
-                            state['consecutive_losses'] = 0
-                            state['current_amount'] = state['base_amount']
-                            state['total_wins'] += 1
-                            state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 🎉 Win! Profit: {profit:.2f}$")
-                        else:
-                            state['consecutive_losses'] += 1
-                            state['current_amount'] = max(state['base_amount'], state['current_amount'] * 2.2)
-                            state['total_losses'] += 1
-                            state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 💔 Loss! Loss: {profit:.2f}$")
-                        state['is_trade_open'] = False
-                        state['contract_id'] = None
-                        current_balance = get_balance(ws)
-                        if current_balance is not None:
-                            state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 💰 Current Balance: {current_balance:.2f}")
-                            if state['tp_target'] and (current_balance - state['initial_balance']) >= state['tp_target']:
-                                state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 🤑 Take Profit reached! Bot stopped.")
-                                state['is_running'] = False
-                        if state['consecutive_losses'] >= state['max_consecutive_losses']:
-                            state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 🛑 Stop Loss hit! Bot stopped.")
-                            state['is_running'] = False
-
-                    s.query(BotSession).filter_by(session_id=bot_session_id).update({
-                        'current_amount': state['current_amount'],
-                        'consecutive_losses': state['consecutive_losses'],
-                        'total_wins': state['total_wins'],
-                        'total_losses': state['total_losses'],
-                        'is_running': state['is_running'],
-                        'is_trade_open': state['is_trade_open'],
-                        'initial_balance': state['initial_balance'],
-                        'contract_id': state['contract_id'],
-                        'logs': json.dumps(state['logs'])
-                    })
-                    s.commit()
-
-            except Exception as e:
-                print(f"Error for session {bot_session_id}: {e}")
-            finally:
-                s.close()
-            time.sleep(1)
-    finally:
-        if ws:
-            ws.close()
-
-# --- Streamlit UI ---
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-if 'user_email' not in st.session_state:
-    st.session_state.user_email = None
-if 'session_id' not in st.session_state:
-    st.session_state.session_id = None
-if 'session_data' not in st.session_state:
-    st.session_state.session_data = {}
-
 # --- File-Based Authentication ---
+# NOTE: For deployment, ensure this file is created or its content is part of env variables if needed.
+# For local testing, create a file named user_ids.txt and add emails line by line.
 ALLOWED_EMAILS_FILE = 'user_ids.txt'
 
 def is_email_allowed(email):
     try:
-        # Check if the file exists, if not, assume no emails are allowed or it's the first run
-        if not os.path.exists(ALLOWED_EMAILS_FILE):
-            # Optionally create it if it doesn't exist, or handle as access denied
-            return False # Or create an empty file and return False
-        with open(ALLOWED_EMAILS_FILE, 'r') as f:
-            allowed_emails = {line.strip() for line in f}
-            return email in allowed_emails
+        # On Render, we might not have direct file access, so this part might need
+        # to be handled via environment variables or other means if the file isn't deployed.
+        # For now, assuming the file will be present.
+        if os.path.exists(ALLOWED_EMAILS_FILE):
+            with open(ALLOWED_EMAILS_FILE, 'r') as f:
+                allowed_emails = {line.strip() for line in f if line.strip()}
+                return email.strip() in allowed_emails
+        return False
     except Exception as e:
-        print(f"Error checking allowed emails: {e}")
+        print(f"Error checking email allowed: {e}")
         return False
 
 # --- Database Session Management ---
+def get_db_session():
+    """Returns a new database session."""
+    return Session()
+
 def get_or_create_user(email):
-    s = Session()
+    s = get_db_session()
     try:
-        user = s.query(User).filter_by(email=email).first()
+        user = s.query(User).filter_by(email=email.strip()).first()
         if not user:
-            user = User(email=email)
+            user = User(email=email.strip())
             s.add(user)
             s.commit()
             s.refresh(user)
@@ -268,12 +79,12 @@ def get_or_create_user(email):
     finally:
         s.close()
 
-def get_or_create_bot_session(user):
-    s = Session()
+def get_or_create_bot_session(user_id):
+    s = get_db_session()
     try:
-        bot_session = s.query(BotSession).filter_by(user_id=user.id).first()
+        bot_session = s.query(BotSession).filter_by(user_id=user_id).first()
         if not bot_session:
-            bot_session = BotSession(user_id=user.id)
+            bot_session = BotSession(user_id=user_id)
             s.add(bot_session)
             s.commit()
             s.refresh(bot_session)
@@ -282,7 +93,7 @@ def get_or_create_bot_session(user):
         s.close()
 
 def load_bot_state(session_id):
-    s = Session()
+    s = get_db_session()
     try:
         bot_session = s.query(BotSession).filter_by(session_id=session_id).first()
         if bot_session:
@@ -306,7 +117,7 @@ def load_bot_state(session_id):
         s.close()
 
 def update_bot_settings(session_id, new_settings):
-    s = Session()
+    s = get_db_session()
     try:
         bot_session = s.query(BotSession).filter_by(session_id=session_id).first()
         if bot_session:
@@ -317,165 +128,265 @@ def update_bot_settings(session_id, new_settings):
     finally:
         s.close()
 
+# --- Trading Logic Functions ---
+def analyse_data(df_ticks):
+    if len(df_ticks) < 60:
+        return "Neutral", "Insufficient data"
+    last_60_ticks = df_ticks.tail(60).copy()
+    first_30 = last_60_ticks.iloc[:30]
+    last_30 = last_60_ticks.iloc[30:]
+    avg_first_30 = first_30['price'].mean()
+    avg_last_30 = last_30['price'].mean()
+    if avg_last_30 > avg_first_30:
+        return "Buy", None
+    elif avg_last_30 < avg_first_30:
+        return "Sell", None
+    else:
+        return "Neutral", "No clear trend in the last 60 ticks."
+
+def place_order(ws, proposal_id, amount):
+    req = {"buy": proposal_id, "price": round(max(0.5, amount), 2)}
+    try:
+        ws.send(json.dumps(req))
+        response = json.loads(ws.recv())
+        return response
+    except Exception as e:
+        print(f"Error placing order: {e}")
+        return {"error": {"message": "Order placement failed."}}
+
+def check_contract_status(ws, contract_id):
+    if not contract_id:
+        return None
+    req = {"proposal_open_contract": 1, "contract_id": contract_id, "subscribe": 1}
+    try:
+        ws.send(json.dumps(req))
+        response = ws.recv() 
+        return json.loads(response).get('proposal_open_contract')
+    except Exception as e:
+        print(f"Error checking contract status: {e}")
+        return None
+
+def get_balance(ws):
+    req = {"balance": 1, "subscribe": 1}
+    try:
+        ws.send(json.dumps(req))
+        response = json.loads(ws.recv())
+        return response.get('balance', {}).get('balance')
+    except Exception as e:
+        print(f"Error getting balance: {e}")
+        return None
+
+def main_trading_loop(bot_session_id):
+    ws = None
+    try:
+        ws = websocket.WebSocket()
+        ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
+        print(f"Connected to Deriv WebSocket for session {bot_session_id}")
+
+        while True:
+            bot_session = None
+            s = get_db_session()
+            try:
+                bot_session = s.query(BotSession).filter_by(session_id=bot_session_id).first()
+                if not bot_session or not bot_session.is_running:
+                    print(f"Bot for session {bot_session_id} is stopped or not found. Exiting loop.")
+                    break
+                
+                # Fetch current state from DB
+                state = {
+                    'api_token': bot_session.api_token,
+                    'base_amount': bot_session.base_amount,
+                    'tp_target': bot_session.tp_target,
+                    'max_consecutive_losses': bot_session.max_consecutive_losses,
+                    'current_amount': bot_session.current_amount,
+                    'consecutive_losses': bot_session.consecutive_losses,
+                    'total_wins': bot_session.total_wins,
+                    'total_losses': bot_session.total_losses,
+                    'is_running': bot_session.is_running,
+                    'is_trade_open': bot_session.is_trade_open,
+                    'initial_balance': bot_session.initial_balance,
+                    'contract_id': bot_session.contract_id,
+                    'logs': json.loads(bot_session.logs) if bot_session.logs else [],
+                }
+
+                if not state['api_token']:
+                    # print("API token not set, waiting...")
+                    time.sleep(5)
+                    continue
+
+                # Authorize
+                auth_req = {"authorize": state['api_token']}
+                ws.send(json.dumps(auth_req))
+                auth_response = json.loads(ws.recv())
+                if auth_response.get('error'):
+                    state['logs'].append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Auth failed: {auth_response['error']['message']}")
+                    update_bot_settings(bot_session_id, {'logs': json.dumps(state['logs'])})
+                    time.sleep(5)
+                    continue
+
+                # Handle trade execution logic
+                if not state.get('is_trade_open'):
+                    now = datetime.now()
+                    if now.second >= 55: # Trigger in the last 5 seconds of every minute
+                        if state['initial_balance'] is None:
+                            current_balance = get_balance(ws)
+                            if current_balance is not None:
+                                state['initial_balance'] = current_balance
+                                state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 💰 Initial Balance: {state['initial_balance']:.2f}")
+                                update_bot_settings(bot_session_id, {'initial_balance': state['initial_balance'], 'logs': json.dumps(state['logs'])})
+                            else:
+                                state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Failed to get balance.")
+                                update_bot_settings(bot_session_id, {'logs': json.dumps(state['logs'])})
+                                time.sleep(5)
+                                continue
+
+                        # Request ticks history for analysis
+                        req = {"ticks_history": "R_100", "end": "latest", "count": 60, "style": "ticks"}
+                        ws.send(json.dumps(req))
+                        tick_data = json.loads(ws.recv())
+                        
+                        if 'history' in tick_data and tick_data['history']['prices']:
+                            df_ticks = pd.DataFrame({'price': tick_data['history']['prices']})
+                            signal, error = analyse_data(df_ticks)
+                            
+                            if signal in ['Buy', 'Sell']:
+                                state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ➡ Entering a {signal.upper()} trade with {state['current_amount']:.2f}$")
+                                proposal_req = {"proposal": 1, "amount": round(state['current_amount'], 2), "basis": "stake", "contract_type": "CALL" if signal == 'Buy' else "PUT", "currency": "USD", "duration": 30, "duration_unit": "s", "symbol": "R_100"}
+                                ws.send(json.dumps(proposal_req))
+                                proposal_response = json.loads(ws.recv())
+                                
+                                if 'proposal' in proposal_response:
+                                    order_response = place_order(ws, proposal_response['proposal']['id'], state['current_amount'])
+                                    if 'buy' in order_response:
+                                        state['is_trade_open'] = True
+                                        state['contract_id'] = order_response['buy']['contract_id']
+                                        state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ✅ Order placed. Contract ID: {state['contract_id']}")
+                                        update_bot_settings(bot_session_id, {"is_trade_open": True, "contract_id": state['contract_id'], "logs": json.dumps(state['logs'])})
+                                    else:
+                                        state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Order failed: {order_response.get('error', {}).get('message', 'Unknown error')}")
+                                        update_bot_settings(bot_session_id, {'logs': json.dumps(state['logs'])})
+                                else:
+                                    state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Proposal failed: {proposal_response.get('error', {}).get('message', 'Unknown error')}")
+                                    update_bot_settings(bot_session_id, {'logs': json.dumps(state['logs'])})
+                            else:
+                                state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ⚪ No clear signal. Waiting.")
+                                update_bot_settings(bot_session_id, {'logs': json.dumps(state['logs'])})
+                        else:
+                            state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ⚪ No tick data received.")
+                            update_bot_settings(bot_session_id, {'logs': json.dumps(state['logs'])})
+
+                elif state.get('is_trade_open') and state.get('contract_id'):
+                    now = datetime.now()
+                    contract_info = check_contract_status(ws, state['contract_id'])
+                    if contract_info and contract_info.get('is_sold'):
+                        profit = contract_info.get('profit', 0)
+                        if profit > 0:
+                            state['consecutive_losses'] = 0
+                            state['current_amount'] = state['base_amount']
+                            state['total_wins'] += 1
+                            state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 🎉 Win! Profit: {profit:.2f}$")
+                        else:
+                            state['consecutive_losses'] += 1
+                            state['current_amount'] = max(state['base_amount'], state['current_amount'] * 2.2) # Martingale logic
+                            state['total_losses'] += 1
+                            state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 💔 Loss! Loss: {profit:.2f}$")
+                        
+                        state['is_trade_open'] = False
+                        state['contract_id'] = None # Clear contract ID after closing
+                        
+                        current_balance = get_balance(ws)
+                        if current_balance is not None:
+                            state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 💰 Current Balance: {current_balance:.2f}")
+                            if state['tp_target'] and (current_balance - state['initial_balance']) >= state['tp_target']:
+                                state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 🤑 Take Profit reached! Bot stopped.")
+                                state['is_running'] = False
+                        if state['consecutive_losses'] >= state['max_consecutive_losses']:
+                            state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 🛑 Stop Loss hit! Bot stopped.")
+                            state['is_running'] = False
+                        
+                        update_bot_settings(bot_session_id, {
+                            'current_amount': state['current_amount'],
+                            'consecutive_losses': state['consecutive_losses'],
+                            'total_wins': state['total_wins'],
+                            'total_losses': state['total_losses'],
+                            'is_running': state['is_running'],
+                            'is_trade_open': state['is_trade_open'],
+                            'initial_balance': state['initial_balance'],
+                            'contract_id': state['contract_id'],
+                            'logs': json.dumps(state['logs'])
+                        })
+            except Exception as e:
+                print(f"Error in main_trading_loop for session {bot_session_id}: {e}")
+                # Log the error and attempt to update DB if possible
+                try:
+                    current_logs = json.loads(bot_session.logs) if bot_session and bot_session.logs else []
+                    current_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💥 CRITICAL ERROR IN LOOP: {str(e)}")
+                    update_bot_settings(bot_session_id, {'logs': json.dumps(current_logs)})
+                except: # If DB connection fails here, just print to console
+                    print(f"Failed to log critical error to DB for session {bot_session_id}")
+            finally:
+                s.close()
+            time.sleep(1) # Small delay to avoid overwhelming the system
+    finally:
+        if ws:
+            ws.close()
+            print(f"WebSocket connection closed for session {bot_session_id}")
+
 # --- Flask App for Web Service ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "KhouryBot is running and ready!"
+    return "KHOURYBOT Trading Bot Service is Running and Ready!"
 
-# --- Main function to start bot and server ---
-def run_bot_and_server():
-    # Create tables if they don't exist
-    Base.metadata.create_all(engine)
-    print("Database tables checked/created successfully.")
-    
-    # Start the bot logic in a separate thread
-    bot_thread = Thread(target=start_all_bots)
-    bot_thread.daemon = True # Allows the main program to exit even if this thread is running
-    bot_thread.start()
+# --- Background Task Runner ---
+def start_all_bots_in_background():
+    """Initializes DB and starts all active bots."""
+    try:
+        Base.metadata.create_all(engine)
+        print("Database tables checked/created successfully.")
+        
+        print("Starting bot management loop.")
+        while True:
+            s = get_db_session()
+            try:
+                active_sessions = s.query(BotSession).filter_by(is_running=True).all()
+                if not active_sessions:
+                    # print("No active bots found. Waiting for commands...") # Uncomment if you want frequent logging
+                    time.sleep(10)
+                    continue
+                
+                for session in active_sessions:
+                    # Check if bot is already running in a thread or needs to start
+                    # This is a simplified approach, a more robust solution would manage threads.
+                    # For now, we rely on the main_trading_loop checking session.is_running.
+                    print(f"Ensuring bot is running for session: {session.session_id}")
+                    main_trading_loop(session.session_id) # This will run until session.is_running becomes False
+                
+                time.sleep(10) # Check for active sessions every 10 seconds
+            except Exception as e:
+                print(f"Error in start_all_bots_in_background: {e}")
+            finally:
+                s.close()
+    except Exception as e:
+        print(f"FATAL ERROR in background bot management: {e}")
 
-    # Start the Flask web server
-    port = int(os.environ.get("PORT", 5000)) # Use environment variable PORT or default to 5000
-    print(f"Starting Flask web server on port {port}")
-    app.run(host="0.0.0.0", port=port)
-
-def start_all_bots():
-    # This function is intended to be run in a separate thread
-    print("Starting the main bot process thread.")
-    while True:
-        s = Session()
-        try:
-            active_sessions = s.query(BotSession).filter_by(is_running=True).all()
-            if not active_sessions:
-                print("No active bots found. Waiting for commands...")
-                time.sleep(10)
-                continue
-            
-            for session in active_sessions:
-                print(f"Starting bot for session: {session.session_id}")
-                # To avoid multiple threads running the same session, we can check if it's already running
-                # However, the current structure assumes main_trading_loop handles its own termination if not running
-                main_trading_loop(session.session_id)
-            
-            # Sleep for a bit if no active sessions were processed or to avoid busy-waiting
-            time.sleep(10) 
-        except Exception as e:
-            print(f"Error in start_all_bots loop: {e}")
-            time.sleep(10) # Wait before retrying
-        finally:
-            s.close()
-
-# --- Streamlit UI Logic ---
+# --- Main Execution Block ---
 if __name__ == "__main__":
-    # Check if the script is being run as the main Streamlit app or by Gunicorn
-    # If the FLASK_APP environment variable is set, it means Gunicorn is running this file.
-    # Otherwise, assume it's being run by Streamlit.
-    if os.environ.get("RUN_BY_STREAMLIT") == "true":
-        st.session_state.logged_in = False
-        st.session_state.user_email = None
-        st.session_state.session_id = None
-        st.session_state.session_data = {}
-
-        if not st.session_state.logged_in:
-            st.title("KHOURYBOT Login 🤖")
-            email = st.text_input("Enter your email address:")
-            if st.button("Login", type="primary"):
-                if is_email_allowed(email):
-                    user = get_or_create_user(email)
-                    bot_session = get_or_create_bot_session(user)
-                    st.session_state.user_email = email
-                    st.session_state.session_id = bot_session.session_id
-                    st.session_state.logged_in = True
-                    st.success("Login successful! Redirecting to bot control...")
-                    st.rerun()
-                else:
-                    st.error("Access denied. Your email is not activated.")
-        else:
-            st.title("KHOURYBOT - Automated Trading 🤖")
-            st.write(f"Logged in as: **{st.session_state.user_email}**")
-            st.header("1. Bot Control")
-            
-            # Attempt to load session data. If session_id is not set yet, this will be an empty dict.
-            if st.session_state.session_id:
-                st.session_state.session_data = load_bot_state(st.session_id)
-            else:
-                st.session_state.session_data = {}
-                
-            current_status = "Running" if st.session_state.session_data.get('is_running') else "Stopped"
-            api_token_from_db = st.session_state.session_data.get('api_token')
-            is_session_configured = api_token_from_db is not None and current_status == "Running"
-
-            if not is_session_configured:
-                st.warning("Please enter your API token and settings to start a new session.")
-                api_token_input = st.text_input("Enter your Deriv API token:", type="password", value=api_token_from_db if api_token_from_db else '')
-                base_amount = st.number_input("Base Amount ($)", min_value=0.5, step=0.5, value=st.session_state.session_data.get('base_amount', 0.5))
-                tp_target = st.number_input("Take Profit Target ($)", min_value=1.0, step=1.0, value=st.session_state.session_data.get('tp_target', 1.0))
-                max_losses = st.number_input("Max Consecutive Losses", min_value=1, step=1, value=st.session_state.session_data.get('max_consecutive_losses', 5))
-            else:
-                api_token_input = api_token_from_db # Keep token hidden, use loaded value
-                base_amount = st.session_state.session_data.get('base_amount')
-                tp_target = st.session_state.session_data.get('tp_target')
-                max_losses = st.session_state.session_data.get('max_consecutive_losses')
-                initial_balance = st.session_state.session_data.get('initial_balance')
-                
-                st.write(f"**API Token:** {'********'}")
-                st.write(f"**Base Amount:** {base_amount}$")
-                st.write(f"**TP Target:** {tp_target}$")
-                st.write(f"**Max Losses:** {max_losses}")
-                if initial_balance is not None: # Check for None explicitly
-                    st.write(f"**Initial Balance:** {initial_balance:.2f}$")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                # Only allow starting if not already running and token is provided
-                start_button = st.button("Start Bot", type="primary", disabled=(current_status == 'Running' or not api_token_input))
-            with col2:
-                stop_button = st.button("Stop Bot", disabled=(current_status == 'Stopped'))
-
-            if start_button:
-                new_settings = {
-                    'is_running': True, 'api_token': api_token_input, 'base_amount': base_amount, 'tp_target': tp_target,
-                    'max_consecutive_losses': max_losses, 'current_amount': base_amount, 'consecutive_losses': 0,
-                    'total_wins': 0, 'total_losses': 0, 'initial_balance': None, 'contract_id': None,
-                    'logs': json.dumps([f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot has been started."])
-                }
-                update_bot_settings(st.session_state.session_id, new_settings)
-                st.success("Bot has been started.")
-                st.rerun()
-
-            if stop_button:
-                logs = st.session_state.session_data.get('logs', [])
-                logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 Bot stopped by user.")
-                update_bot_settings(st.session_state.session_id, {'is_running': False, 'logs': json.dumps(logs)})
-                st.warning("Bot has been stopped.")
-                st.rerun()
-
-            st.info(f"Bot Status: **{'Running' if current_status == 'Running' else 'Stopped'}**")
-            st.markdown("---")
-            st.header("2. Live Bot Logs")
-            logs = st.session_state.session_data.get('logs', [])
-            with st.container(height=600):
-                st.text_area("Logs", "\n".join(logs), height=600, key="logs_textarea")
-            
-            # Auto-refresh for logs
-            time.sleep(5)
-            st.rerun()
-
-    else: # If not run by Streamlit, assume it's Gunicorn running the Flask app
-        # Set environment variable to indicate Flask app is running
-        os.environ["RUN_BY_STREAMLIT"] = "false"
-        
-        # Gunicorn will call app:app, so we need to ensure `app` is defined and callable
-        # The Flask app instance is already created as `app = Flask(__name__)` above.
-        # The `run_bot_and_server` function is not directly called by gunicorn,
-        # it's gunicorn that imports and runs the Flask app instance named `app`.
-        # The thread for the bot logic needs to be started independently.
-        
-        # Start the bot logic in a separate thread when Gunicorn loads the app
-        bot_thread = Thread(target=start_all_bots)
-        bot_thread.daemon = True 
-        bot_thread.start()
-        
-        # Flask app is ready to be served by Gunicorn on the port provided by Render
-        pass # Gunicorn will handle the execution of the Flask app
+    # Start the bot logic in a separate thread
+    bot_management_thread = Thread(target=start_all_bots_in_background)
+    bot_management_thread.daemon = True # Allows the main program to exit even if this thread is running
+    bot_management_thread.start()
+    
+    # Get port from environment variable or default to 5000
+    port = int(os.environ.get("PORT", 5000))
+    print(f"Starting Flask web server on port {port}...")
+    
+    # Start the Flask web server to keep the service alive
+    # Gunicorn will manage this when deployed. For local running, app.run() works.
+    # If running locally and want to test gunicorn behavior, use:
+    # import subprocess
+    # subprocess.run(["gunicorn", "--bind", f"0.0.0.0:{port}", "trading_bot:app"])
+    
+    # For direct execution (e.g., python trading_bot.py)
+    app.run(host="0.0.0.0", port=port)
