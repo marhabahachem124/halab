@@ -1,6 +1,6 @@
 import streamlit as st
 import sqlalchemy as sa
-from sqlalchemy.orm import sessionmaker, declarative_base # <--- تم تعديل هذا السطر
+from sqlalchemy.orm import sessionmaker, declarative_base # استيراد declarative_base من sqlalchemy.orm
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, ForeignKey
 import json
 import uuid
@@ -11,11 +11,10 @@ import pandas as pd
 from threading import Thread
 
 # --- Database Setup ---
-# تأكد أن هذا الرابط صحيح ويشير إلى قاعدة بياناتك
 DATABASE_URL = "postgresql://bibokh_user:Ric9h1SaTADxdkV0LgNmF8c0RPWhWYzy@dpg-d30mrpogjchc73f1tiag-a.oregon-postgres.render.com/bibokh"
 engine = sa.create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
-Base = declarative_base() # <--- هذا الآن يعمل بشكل صحيح
+Base = declarative_base() # استخدام declarative_base المستوردة
 
 class User(Base):
     __tablename__ = 'users'
@@ -38,10 +37,17 @@ class BotSession(Base):
     is_running = Column(Boolean, default=False)
     is_trade_open = Column(Boolean, default=False)
     initial_balance = Column(Float, nullable=True)
-    contract_id = Column(String, nullable=True)
+    contract_id = Column(String, nullable=True) # هذا العمود تم إضافته
     logs = Column(String, default="[]")
 
-Base.metadata.create_all(engine)
+# --- Ensure Database Schema is Up-to-Date ---
+# هذه الخطوة تقوم بإنشاء الجداول أو إضافة الأعمدة الجديدة إذا لم تكن موجودة
+try:
+    Base.metadata.create_all(engine)
+    print("Database tables checked/created successfully.")
+except Exception as e:
+    print(f"Error during database initialization: {e}")
+    # قد تحتاج إلى التعامل مع هذا الخطأ بشكل أكثر تفصيلاً إذا تكرر
 
 # --- File-Based Authentication ---
 ALLOWED_EMAILS_FILE = 'user_ids.txt'
@@ -238,7 +244,7 @@ def main_trading_loop(bot_session_id):
                                     order_response = place_order(ws, proposal_response['proposal']['id'], state['current_amount'])
                                     if 'buy' in order_response:
                                         state['is_trade_open'] = True
-                                        state['contract_id'] = order_response['buy']['contract_id']
+                                        state['contract_id'] = order_response['buy']['contract_id'] # حفظ contract_id
                                         state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ✅ Order placed. Contract ID: {state['contract_id']}")
                                         s.query(BotSession).filter_by(session_id=bot_session_id).update({"is_trade_open": True, "contract_id": state['contract_id'], "logs": json.dumps(state['logs'])})
                                         s.commit()
@@ -271,7 +277,7 @@ def main_trading_loop(bot_session_id):
                             state['total_losses'] += 1
                             state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 💔 Loss! Loss: {profit:.2f}$")
                         state['is_trade_open'] = False
-                        state['contract_id'] = None
+                        state['contract_id'] = None # إعادة تعيين contract_id بعد انتهاء الصفقة
                         current_balance = get_balance(ws)
                         if current_balance is not None:
                             state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 💰 Current Balance: {current_balance:.2f}")
@@ -299,12 +305,13 @@ def main_trading_loop(bot_session_id):
                 print(f"Error for session {bot_session_id}: {e}")
             finally:
                 s.close()
-            time.sleep(1)
+            time.sleep(1) # تأخير بسيط لتجنب استهلاك الموارد بشكل مفرط
     finally:
         if ws:
             ws.close()
 
-# --- Streamlit UI and Bot Thread Management ---
+# --- Streamlit UI ---
+# Initialize session state variables if they don't exist
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
 if 'user_email' not in st.session_state:
@@ -313,19 +320,19 @@ if 'session_id' not in st.session_state:
     st.session_state.session_id = None
 if 'session_data' not in st.session_state:
     st.session_state.session_data = {}
-if 'bot_thread' not in st.session_state:
-    st.session_state.bot_thread = None # To hold the trading thread
+if 'bot_thread' not in st.session_state: # Thread for the trading loop
+    st.session_state.bot_thread = None
 
 def start_bot_thread(session_id):
+    """Starts the main trading loop in a separate thread."""
     if st.session_state.bot_thread is None or not st.session_state.bot_thread.is_alive():
         st.session_state.bot_thread = Thread(target=main_trading_loop, args=(session_id,))
         st.session_state.bot_thread.daemon = True
         st.session_state.bot_thread.start()
-        print(f"Bot thread started for session: {session_id}") # Debug print
+        print(f"Trading bot thread started for session: {session_id}")
     else:
-        print("Bot thread is already running.") # Debug print
+        print(f"Trading bot thread for session {session_id} is already running.")
 
-# --- Streamlit Page Layout ---
 if not st.session_state.logged_in:
     st.title("KHOURYBOT Login 🤖")
     email = st.text_input("Enter your email address:")
@@ -337,17 +344,20 @@ if not st.session_state.logged_in:
             st.session_state.session_id = bot_session.session_id
             st.session_state.logged_in = True
             st.success("Login successful! Redirecting to bot control...")
-            st.rerun()
+            st.rerun() # Reload the app to show the main page
         else:
             st.error("Access denied. Your email is not activated.")
 else:
     st.title("KHOURYBOT - Automated Trading 🤖")
     st.write(f"Logged in as: **{st.session_state.user_email}**")
     st.header("1. Bot Control")
+    
+    # Load current state to populate UI fields
     st.session_state.session_data = load_bot_state(st.session_state.session_id)
     current_status = "Running" if st.session_state.session_data.get('is_running') else "Stopped"
     is_session_active = st.session_state.session_data.get('api_token') is not None
     
+    # Define UI elements based on current status
     if not is_session_active or not current_status == "Running":
         st.warning("Please enter new settings to start a new session.")
         api_token = st.text_input("Enter your Deriv API token:", type="password", value=st.session_state.session_data.get('api_token', ''))
@@ -365,9 +375,12 @@ else:
         st.write(f"**Base Amount:** {base_amount}$")
         st.write(f"**TP Target:** {tp_target}$")
         st.write(f"**Max Losses:** {max_losses}")
-        if initial_balance:
+        if initial_balance is not None: # Only show if balance has been set
             st.write(f"**Initial Balance:** {initial_balance:.2f}$")
-            
+            current_balance = st.session_state.session_data.get('current_amount') # This might be stale, relying on logs for accurate current balance.
+            if current_balance is not None:
+                 st.write(f"**Current Balance (approx):** {current_balance:.2f}$") # Note: this is an approximation from last known state
+
     col1, col2 = st.columns(2)
     with col1:
         start_button = st.button("Start Bot", type="primary", disabled=(current_status == 'Running' or not api_token))
@@ -382,31 +395,26 @@ else:
             'logs': json.dumps([f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot has been started."])
         }
         update_bot_settings(st.session_state.session_id, new_settings)
-        start_bot_thread(st.session_state.session_id) # Start the bot thread here
+        start_bot_thread(st.session_state.session_id) # Start the trading thread
         st.success("Bot has been started.")
-        st.rerun()
+        st.rerun() # Reload to reflect changes
 
     if stop_button:
         logs = st.session_state.session_data.get('logs', [])
         logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 Bot stopped by user.")
         update_bot_settings(st.session_state.session_id, {'is_running': False, 'logs': json.dumps(logs)})
-        # You might want to add logic here to signal the bot thread to stop if it's running.
         st.warning("Bot has been stopped.")
         st.rerun()
 
     st.info(f"Bot Status: **{'Running' if current_status == 'Running' else 'Stopped'}**")
     st.markdown("---")
     st.header("2. Live Bot Logs")
+    
+    # Display logs and automatically update them
     logs = st.session_state.session_data.get('logs', [])
     with st.container(height=600):
         st.text_area("Logs", "\n".join(logs), height=600, key="logs_textarea")
     
-    # This ensures the logs are refreshed periodically
+    # This rerun will cause the logs to update every 5 seconds
     time.sleep(5)
     st.rerun()
-
-# --- Main Execution Block for Streamlit ---
-if __name__ == "__main__":
-    # The main logic is handled within the Streamlit UI flow above.
-    # The bot thread is started when the "Start Bot" button is pressed.
-    pass
