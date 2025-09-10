@@ -1,7 +1,4 @@
 streamlit
-psycopg2-binary
-sqlalchemy
 pandas
 websocket-client
-gunicorn
-flask
+numpy
