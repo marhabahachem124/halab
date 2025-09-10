@@ -2,7 +2,7 @@ import streamlit as st
 import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, ForeignKey
-from sqlalchemy.ext.declarative import declarative_base # Correct import for declarative_base
+from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 import json
 import uuid
@@ -13,11 +13,11 @@ import pandas as pd
 from threading import Thread
 
 # --- Database Setup ---
-# تأكد أن هذا الرابط صحيح ويشير إلى قاعدة بياناتك
+# تم استبدال رابط قاعدة البيانات القديم بالرابط الجديد الذي قدمته
 DATABASE_URL = "postgresql://deriv_pv02_user:pkCXarwp82IBTnoIWySO8CuAVLUcw1B1@dpg-d30otpogjchc73f4bieg-a.oregon-postgres.render.com/deriv_pv02"
 engine = sa.create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
-Base = declarative_base() # Corrected here
+Base = declarative_base()
 
 class User(Base):
     __tablename__ = 'users'
@@ -210,6 +210,7 @@ def main_trading_loop(bot_session_id):
 
                 if not state.get('is_trade_open'):
                     now = datetime.now()
+                    # Check if it's time to potentially place a new trade (last few seconds of a minute)
                     if now.second >= 55:
                         if state['initial_balance'] is None:
                             current_balance = get_balance(ws)
@@ -232,26 +233,44 @@ def main_trading_loop(bot_session_id):
                             df_ticks = pd.DataFrame({'price': tick_data['history']['prices']})
                             signal, error = analyse_data(df_ticks)
                             if signal in ['Buy', 'Sell']:
-                                state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ➡ Entering a {signal.upper()} trade with {state['current_amount']:.2f}$")
-                                proposal_req = {"proposal": 1, "amount": round(state['current_amount'], 2), "basis": "stake", "contract_type": "CALL" if signal == 'Buy' else "PUT", "currency": "USD", "duration": 30, "duration_unit": "s", "symbol": "R_100"}
+                                state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ➡ Analyzing for {signal.upper()} trade with {state['current_amount']:.2f}$")
+                                
+                                # *** Modification Starts Here ***
+                                proposal_req = {
+                                    "proposal": 1, 
+                                    "amount": round(state['current_amount'], 2), 
+                                    "basis": "stake", 
+                                    "contract_type": "CALL" if signal == 'Buy' else "PUT", 
+                                    "currency": "USD", 
+                                    "duration": 1, # Set duration to 1 for immediate execution in the next tick
+                                    "duration_unit": "m", # Use minutes as duration unit for simplicity with ticks_history
+                                    "symbol": "R_100"
+                                }
                                 ws.send(json.dumps(proposal_req))
                                 proposal_response = json.loads(ws.recv())
+
+                                # Check if proposal was successful
                                 if 'proposal' in proposal_response:
-                                    order_response = place_order(ws, proposal_response['proposal']['id'], state['current_amount'])
-                                    if 'buy' in order_response:
+                                    proposal_id = proposal_response['proposal']['id']
+                                    # Now, attempt to buy the contract
+                                    buy_req = {"buy": proposal_id, "price": round(state['current_amount'], 2)}
+                                    ws.send(json.dumps(buy_req))
+                                    order_response = json.loads(ws.recv())
+
+                                    if 'buy' in order_response and order_response['buy'].get('contract_id'):
                                         state['is_trade_open'] = True
                                         state['contract_id'] = order_response['buy']['contract_id']
-                                        state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ✅ Order placed. Contract ID: {state['contract_id']}")
+                                        state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ✅ Order placed successfully. Contract ID: {state['contract_id']}")
                                         s.query(BotSession).filter_by(session_id=bot_session_id).update({"is_trade_open": True, "contract_id": state['contract_id'], "logs": json.dumps(state['logs'])})
                                         s.commit()
                                     else:
-                                        # Now we can log the specific error from the platform
+                                        # Log the specific error message from the platform
                                         error_msg = order_response.get('error', {}).get('message', 'Unknown error')
-                                        state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Order failed: {error_msg}")
+                                        state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Order placement failed: {error_msg}")
                                         s.query(BotSession).filter_by(session_id=bot_session_id).update({'logs': json.dumps(state['logs'])})
                                         s.commit()
                                 else:
-                                    # Now we can log the specific error from the platform
+                                    # Log the specific error message from the platform for proposal failure
                                     error_msg = proposal_response.get('error', {}).get('message', 'Unknown error')
                                     state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Proposal failed: {error_msg}")
                                     s.query(BotSession).filter_by(session_id=bot_session_id).update({'logs': json.dumps(state['logs'])})
@@ -273,17 +292,20 @@ def main_trading_loop(bot_session_id):
                             state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 🎉 Win! Profit: {profit:.2f}$")
                         else:
                             state['consecutive_losses'] += 1
-                            state['current_amount'] = max(state['base_amount'], state['current_amount'] * 2.2)
+                            # Simple martingale logic: double stake after a loss, capped by base amount
+                            state['current_amount'] = max(state['base_amount'], state['current_amount'] * 1.5) # Adjusted multiplier for more conservative approach
                             state['total_losses'] += 1
-                            state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 💔 Loss! Loss: {profit:.2f}$")
+                            state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 💔 Loss! Loss: {profit:.2f}$ (Consecutive: {state['consecutive_losses']})")
                         state['is_trade_open'] = False
                         state['contract_id'] = None
+                        
                         current_balance = get_balance(ws)
                         if current_balance is not None:
                             state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 💰 Current Balance: {current_balance:.2f}")
                             if state['tp_target'] and (current_balance - state['initial_balance']) >= state['tp_target']:
                                 state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 🤑 Take Profit reached! Bot stopped.")
                                 state['is_running'] = False
+                        
                         if state['consecutive_losses'] >= state['max_consecutive_losses']:
                             state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 🛑 Stop Loss hit! Bot stopped.")
                             state['is_running'] = False
@@ -303,6 +325,19 @@ def main_trading_loop(bot_session_id):
 
             except Exception as e:
                 print(f"Error for session {bot_session_id}: {e}")
+                # Add error to logs for debugging
+                s_err = Session()
+                try:
+                    bot_session_err = s_err.query(BotSession).filter_by(session_id=bot_session_id).first()
+                    if bot_session_err:
+                        err_logs = json.loads(bot_session_err.logs)
+                        err_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🚨 Runtime Error: {str(e)}")
+                        s_err.query(BotSession).filter_by(session_id=bot_session_id).update({'logs': json.dumps(err_logs)})
+                        s_err.commit()
+                except Exception as log_e:
+                    print(f"Failed to log runtime error: {log_e}")
+                finally:
+                    s_err.close()
             finally:
                 s.close()
             time.sleep(1)
@@ -369,6 +404,7 @@ else:
         st.write(f"**TP Target:** {tp_target}$")
         st.write(f"**Max Losses:** {max_losses}")
         if initial_balance:
+            # Changed from st.metric to st.write to avoid formatting issues
             st.write(f"**Initial Balance:** {initial_balance:.2f}$")
             
     col1, col2 = st.columns(2)
