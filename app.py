@@ -4,14 +4,18 @@ import time
 import websocket
 import pandas as pd
 from datetime import datetime, timedelta
-from threading import Thread
-import os
 
-# --- Trading Logic Functions ---
+# --- Helper Functions ---
+def get_balance(ws):
+    req = {"balance": 1, "subscribe": 1}
+    try:
+        ws.send(json.dumps(req))
+        response = json.loads(ws.recv())
+        return response.get('balance', {}).get('balance')
+    except Exception:
+        return None
+
 def analyse_data(df_ticks):
-    """
-    Analyzes the last 60 ticks based on the average of the first and last 30 ticks.
-    """
     if len(df_ticks) < 60:
         return "Neutral", "Insufficient data: Less than 60 ticks available."
     
@@ -30,9 +34,6 @@ def analyse_data(df_ticks):
         return "Neutral", "No clear trend in the last 60 ticks."
 
 def place_order(ws, proposal_id, amount):
-    """
-    Places a buy order based on a pre-fetched proposal ID.
-    """
     req = {"buy": proposal_id, "price": round(max(0.5, amount), 2)}
     try:
         ws.send(json.dumps(req))
@@ -42,9 +43,6 @@ def place_order(ws, proposal_id, amount):
         return {"error": {"message": "Order placement failed."}}
 
 def check_contract_status(ws, contract_id):
-    """
-    Checks the status of an open contract.
-    """
     req = {"proposal_open_contract": 1, "contract_id": contract_id, "subscribe": 1}
     try:
         ws.send(json.dumps(req))
@@ -53,241 +51,283 @@ def check_contract_status(ws, contract_id):
     except Exception:
         return None
 
-def get_balance(ws):
-    """
-    Gets the account balance.
-    """
-    req = {"balance": 1, "subscribe": 1}
-    try:
-        ws.send(json.dumps(req))
-        response = json.loads(ws.recv())
-        return response.get('balance', {}).get('balance')
-    except Exception:
-        return None
+# --- Initial Setup ---
+if "user_token" not in st.session_state:
+    st.session_state.user_token = ""
+if "bot_running" not in st.session_state:
+    st.session_state.bot_running = False
+if "is_trade_open" not in st.session_state:
+    st.session_state.is_trade_open = False
+if "last_action_time" not in st.session_state:
+    st.session_state.last_action_time = datetime.now()
+if "initial_balance" not in st.session_state:
+    st.session_state.initial_balance = None
+if "log_records" not in st.session_state:
+    st.session_state.log_records = []
+if "base_amount" not in st.session_state:
+    st.session_state.base_amount = 0.5
+if "current_amount" not in st.session_state:
+    st.session_state.current_amount = 0.5
+if "consecutive_losses" not in st.session_state:
+    st.session_state.consecutive_losses = 0
+if "total_wins" not in st.session_state:
+    st.session_state.total_wins = 0
+if "total_losses" not in st.session_state:
+    st.session_state.total_losses = 0
+if "tp_target" not in st.session_state:
+    st.session_state.tp_target = 10.0
+if "max_consecutive_losses" not in st.session_state:
+    st.session_state.max_consecutive_losses = 5
+if "page" not in st.session_state:
+    st.session_state.page = 'inputs'
+if "trade_start_time" not in st.session_state:
+    st.session_state.trade_start_time = None
+if "contract_id" not in st.session_state:
+    st.session_state.contract_id = None
+if "current_balance" not in st.session_state:
+    st.session_state.current_balance = None
 
-def main_trading_loop():
-    """
-    The main trading logic that runs in a separate thread.
-    """
-    state = st.session_state.get('bot_state', {})
+# --- Display Status and Timer ---
+st.header("KHOURYBOT - The Simple Trader 🤖")
+status_placeholder = st.empty()
+timer_placeholder = st.empty()
+
+if st.session_state.bot_running:
+    if not st.session_state.is_trade_open:
+        status_placeholder.info("Analysing...")
+        now = datetime.now()
+        next_minute = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
+        seconds_left = max(0, (next_minute - now).total_seconds())
+        timer_placeholder.metric("Next action in", f"{int(seconds_left)}s")
+    else:
+        status_placeholder.info("Waiting for trade result...")
+        timer_placeholder.empty()
+else:
+    status_placeholder.empty()
+    timer_placeholder.empty()
+
+# --- Main Bot Logic (Runs once per minute) ---
+if st.session_state.bot_running and not st.session_state.is_trade_open:
+    now = datetime.now()
+    seconds_in_minute = now.second
     
-    ws = None
-    try:
-        ws = websocket.WebSocket()
-        ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
-
-        auth_req = {"authorize": state.get('api_token')}
-        ws.send(json.dumps(auth_req))
-        auth_response = json.loads(ws.recv())
-        if auth_response.get('error'):
-            state['status'] = f"❌ Auth failed: {auth_response['error']['message']}"
-            st.session_state['bot_state'] = state
-            st.session_state['bot_is_running'] = False
-            return
-
-        while st.session_state.get('bot_is_running'):
-            state = st.session_state.get('bot_state', {})
+    if (now - st.session_state.last_action_time).total_seconds() >= 60 and seconds_in_minute >= 55:
+        st.session_state.last_action_time = now
+        
+        ws = None
+        try:
+            ws = websocket.WebSocket()
+            ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
             
-            if not state.get('is_trade_open'):
-                state['status'] = "Analysing..."
-                st.session_state['bot_state'] = state
-                
-                # Ensure we have the initial balance before starting.
-                if state.get('initial_balance') is None:
+            auth_req = {"authorize": st.session_state.user_token}
+            ws.send(json.dumps(auth_req))
+            auth_response = json.loads(ws.recv())
+            
+            if auth_response.get('error'):
+                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Authentication failed: {auth_response['error']['message']}")
+                st.session_state.bot_running = False
+            else:
+                if st.session_state.initial_balance is None:
                     current_balance = get_balance(ws)
                     if current_balance is not None:
-                        state['initial_balance'] = current_balance
-                        state['current_balance'] = current_balance
+                        st.session_state.initial_balance = current_balance
+                        st.session_state.current_balance = current_balance
+                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Initial Balance: {st.session_state.initial_balance}")
                     else:
-                        state['status'] = "Failed to get balance. Retrying..."
-                        st.session_state['bot_state'] = state
-                        time.sleep(5)
-                        continue
-
+                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Failed to retrieve initial balance.")
+                
                 # Request 60 ticks
                 req = {"ticks_history": "R_100", "end": "latest", "count": 60, "style": "ticks"}
                 ws.send(json.dumps(req))
                 tick_data = json.loads(ws.recv())
                 
                 if 'history' in tick_data and tick_data['history']['prices']:
-                    df_ticks = pd.DataFrame({'price': tick_data['history']['prices']})
-                    signal, error = analyse_data(df_ticks)
+                    ticks = tick_data['history']['prices']
+                    df_ticks = pd.DataFrame({'price': ticks})
+                    
+                    signal, error_msg = analyse_data(df_ticks)
+                    
+                    if error_msg:
+                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Analysis Error: {error_msg}")
                     
                     if signal in ['Buy', 'Sell']:
-                        state['status'] = f"Entering {signal.upper()} trade with {state['current_amount']:.2f}$"
-                        proposal_req = {"proposal": 1, "amount": round(state['current_amount'], 2), "basis": "stake", "contract_type": "CALL" if signal == 'Buy' else "PUT", "currency": "USD", "duration": 30, "duration_unit": "t", "symbol": "R_100"}
+                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ➡ Entering a {signal.upper()} trade with {round(st.session_state.current_amount, 2)}$")
+                        
+                        proposal_req = {
+                            "proposal": 1,
+                            "amount": round(st.session_state.current_amount, 2),
+                            "basis": "stake",
+                            "contract_type": "CALL" if signal == 'Buy' else "PUT",
+                            "currency": "USD",
+                            "duration": 30, # Duration in ticks
+                            "duration_unit": "t", # Duration unit is ticks
+                            "symbol": "R_100"
+                        }
                         ws.send(json.dumps(proposal_req))
                         proposal_response = json.loads(ws.recv())
-
+                        
                         if 'proposal' in proposal_response:
-                            order_response = place_order(ws, proposal_response['proposal']['id'], state['current_amount'])
-                            if 'buy' in order_response and order_response['buy'].get('contract_id'):
-                                state['is_trade_open'] = True
-                                state['contract_id'] = order_response['buy']['contract_id']
-                                state['status'] = f"Waiting for trade result... (Contract ID: {state['contract_id']})"
-                                state['trade_start_time'] = datetime.now()
-                                st.session_state['bot_state'] = state
+                            proposal_id = proposal_response['proposal']['id']
+                            order_response = place_order(ws, proposal_id, st.session_state.current_amount)
+                            
+                            if 'buy' in order_response and 'contract_id' in order_response['buy']:
+                                st.session_state.is_trade_open = True
+                                st.session_state.trade_start_time = datetime.now()
+                                st.session_state.contract_id = order_response['buy']['contract_id']
+                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Order placed.")
+                            elif 'error' in order_response:
+                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Order failed: {order_response['error']['message']}")
                             else:
-                                error_msg = order_response.get('error', {}).get('message', 'Unknown order placement error')
-                                state['status'] = f"❌ Order failed: {error_msg}"
-                                st.session_state['bot_state'] = state
+                                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Unexpected order response: {order_response}")
                         else:
-                            error_msg = proposal_response.get('error', {}).get('message', 'Unknown proposal error')
-                            state['status'] = f"❌ Proposal failed: {error_msg}"
-                            st.session_state['bot_state'] = state
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Proposal failed: {proposal_response.get('error', {}).get('message', 'Unknown error')}")
                     else:
-                        state['status'] = "No clear signal. Waiting for the next analysis cycle."
-                        st.session_state['bot_state'] = state
+                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚪ No clear signal. Waiting for the next analysis cycle.")
+
+                else:
+                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Error: Could not get tick history data or data is empty.")
+        except websocket.WebSocketConnectionClosedException:
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%H:%S')}] ❌ WebSocket connection closed unexpectedly.")
+            st.session_state.bot_running = False
+        except websocket.WebSocketTimeoutException:
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ WebSocket connection timed out.")
+            st.session_state.bot_running = False
+        except Exception as e:
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ An error occurred during the trading cycle: {e}")
+        finally:
+            if ws and ws.connected:
+                ws.close()
+        st.rerun()
+
+# --- Check Pending Trade Result ---
+if st.session_state.is_trade_open and st.session_state.trade_start_time:
+    if (datetime.now() - st.session_state.trade_start_time).total_seconds() >= 40:
+        ws = None
+        try:
+            ws = websocket.WebSocket()
+            ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
+            auth_req = {"authorize": st.session_state.user_token}
+            ws.send(json.dumps(auth_req))
+            auth_response = json.loads(ws.recv())
             
-            elif state.get('is_trade_open') and state.get('contract_id'):
-                # Check for trade result after 40 seconds
-                if (datetime.now() - state['trade_start_time']).total_seconds() >= 40:
-                    contract_info = check_contract_status(ws, state['contract_id'])
-                    if contract_info and contract_info.get('is_sold'):
-                        profit = contract_info.get('profit', 0)
-                        
-                        if profit > 0:
-                            state['consecutive_losses'] = 0
-                            state['current_amount'] = state['base_amount']
-                            state['total_wins'] += 1
-                            state['status'] = f"🎉 Win! Profit: {profit:.2f}$"
-                        else:
-                            state['consecutive_losses'] += 1
-                            state['current_amount'] = max(state['base_amount'], state['current_amount'] * 2.2)
-                            state['total_losses'] += 1
-                            state['status'] = f"💔 Loss! Loss: {profit:.2f}$"
-                        
-                        state['is_trade_open'] = False
-                        state['contract_id'] = None
-                        current_balance = get_balance(ws)
-                        if current_balance is not None:
-                            state['current_balance'] = current_balance
-                            
-                        if state.get('tp_target') and (current_balance - state.get('initial_balance', 0)) >= state['tp_target']:
-                            state['status'] = "🤑 Take Profit reached! Bot stopped."
-                            st.session_state['bot_is_running'] = False
-                            st.session_state['bot_state'] = state
-                            return
-                            
-                        if state['consecutive_losses'] >= state['max_consecutive_losses']:
-                            state['status'] = "🛑 Stop Loss hit! Bot stopped."
-                            st.session_state['bot_is_running'] = False
-                            st.session_state['bot_state'] = state
-                            return
-                        
-                        st.session_state['bot_state'] = state
+            if auth_response.get('error'):
+                st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Reconnection failed for result check. Authentication error.")
+                st.session_state.bot_running = False
+                st.session_state.is_trade_open = False
+            else:
+                contract_info = check_contract_status(ws, st.session_state.contract_id)
+                if contract_info and contract_info.get('is_sold'):
+                    profit = contract_info.get('profit', 0)
+                    
+                    if profit > 0:
+                        st.session_state.consecutive_losses = 0
+                        st.session_state.total_wins += 1
+                        st.session_state.current_amount = st.session_state.base_amount
+                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🎉 Win! Profit: {profit:.2f}$")
+                    elif profit < 0:
+                        st.session_state.consecutive_losses += 1
+                        st.session_state.total_losses += 1
+                        next_bet = st.session_state.current_amount * 2.2
+                        st.session_state.current_amount = max(st.session_state.base_amount, next_bet)
+                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💔 Loss! Loss: {profit:.2f}$")
                     else:
-                        state['status'] = "Still waiting for trade result..."
-                        st.session_state['bot_state'] = state
+                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚪ No change. Profit/Loss: 0$")
+                        
+                    st.session_state.is_trade_open = False
+                    
+                    current_balance = get_balance(ws)
+                    if current_balance is not None:
+                        st.session_state.current_balance = current_balance
+                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 💰 Current Balance: {current_balance:.2f}")
+                        
+                        if st.session_state.tp_target and (current_balance - st.session_state.initial_balance) >= st.session_state.tp_target:
+                            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🤑 Take Profit target ({st.session_state.tp_target}$) reached! Bot stopped.")
+                            st.session_state.bot_running = False
+                    else:
+                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠ Could not retrieve balance after trade.")
+                        
+                    if st.session_state.consecutive_losses >= st.session_state.max_consecutive_losses:
+                        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 Stop Loss hit ({st.session_state.consecutive_losses} consecutive losses)! Bot stopped.")
+                        st.session_state.bot_running = False
+                elif contract_info and not contract_info.get('is_sold'):
+                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠ Contract {st.session_state.contract_id} is not yet sold/closed.")
+                else:
+                    st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠ Could not get contract info for ID: {st.session_state.contract_id}. Contract might have been cancelled or failed.")
+                    st.session_state.is_trade_open = False
+        except websocket.WebSocketConnectionClosedException:
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ WebSocket connection closed unexpectedly during result check.")
+            st.session_state.bot_running = False
+            st.session_state.is_trade_open = False
+        except websocket.WebSocketTimeoutException:
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ WebSocket connection timed out during result check.")
+            st.session_state.bot_running = False
+            st.session_state.is_trade_open = False
+        except Exception as e:
+            st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ An error occurred getting the trade result: {e}")
+        finally:
+            if ws and ws.connected:
+                ws.close()
+        st.session_state.trade_start_time = None
+        st.session_state.contract_id = None
+        st.rerun()
 
-            time.sleep(1)
-            
-    finally:
-        if ws:
-            ws.close()
-
-def start_bot_thread():
-    st.session_state.bot_thread = Thread(target=main_trading_loop)
-    st.session_state.bot_thread.daemon = True
-    st.session_state.bot_thread.start()
-
-# --- Streamlit UI ---
-st.title("KHOURYBOT - The Simple Trader 🤖")
-
-# State variables
-if 'bot_is_running' not in st.session_state:
-    st.session_state.bot_is_running = False
-if 'bot_state' not in st.session_state:
-    st.session_state.bot_state = {
-        'api_token': '',
-        'base_amount': 0.5,
-        'tp_target': 10.0,
-        'max_consecutive_losses': 5,
-        'current_amount': 0.5,
-        'consecutive_losses': 0,
-        'total_wins': 0,
-        'total_losses': 0,
-        'is_trade_open': False,
-        'initial_balance': None,
-        'current_balance': None,
-        'contract_id': None,
-        'trade_start_time': None,
-        'status': "Ready to start"
-    }
-
-with st.expander("Bot Settings", expanded=True):
-    st.text_input("Deriv API Token:", type="password", key='api_token_input', 
-                  value=st.session_state.bot_state['api_token'])
-    st.number_input("Base Amount ($):", min_value=0.5, step=0.5, key='base_amount_input', 
-                    value=st.session_state.bot_state['base_amount'])
-    st.number_input("Take Profit Target ($):", min_value=1.0, step=1.0, key='tp_target_input', 
-                    value=st.session_state.bot_state['tp_target'])
-    st.number_input("Max Consecutive Losses:", min_value=1, step=1, key='max_losses_input', 
-                    value=st.session_state.bot_state['max_consecutive_losses'])
+# --- UI Navigation and Controls ---
+if st.session_state.page == 'inputs':
+    st.header("1. Bot Settings")
+    st.session_state.user_token = st.text_input("Enter your Deriv API token:", type="password", key="api_token_input")
+    st.session_state.base_amount = st.number_input("Base Amount ($)", min_value=0.5, step=0.5, value=st.session_state.base_amount)
+    st.session_state.tp_target = st.number_input("Take Profit Target ($)", min_value=1.0, step=1.0, value=st.session_state.tp_target)
+    st.session_state.max_consecutive_losses = st.number_input("Max Consecutive Losses", min_value=1, step=1, value=st.session_state.max_consecutive_losses)
     
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Start Bot", type="primary", disabled=st.session_state.bot_is_running):
-            st.session_state.bot_is_running = True
-            st.session_state.bot_state = {
-                'api_token': st.session_state.api_token_input,
-                'base_amount': st.session_state.base_amount_input,
-                'tp_target': st.session_state.tp_target_input,
-                'max_consecutive_losses': st.session_state.max_losses_input,
-                'current_amount': st.session_state.base_amount_input,
-                'consecutive_losses': 0,
-                'total_wins': 0,
-                'total_losses': 0,
-                'is_trade_open': False,
-                'initial_balance': None,
-                'current_balance': None,
-                'contract_id': None,
-                'trade_start_time': None,
-                'status': "Starting..."
-            }
-            start_bot_thread()
-            st.success("Bot started!")
+        start_button = st.button("Start Bot", type="primary")
+    with col2:
+        stop_button = st.button("Stop Bot")
+        
+    if start_button:
+        if not st.session_state.user_token:
+            st.error("Please enter a valid API token before starting the bot.")
+        else:
+            st.session_state.bot_running = True
+            st.session_state.current_amount = st.session_state.base_amount
+            st.session_state.consecutive_losses = 0
+            st.session_state.total_wins = 0
+            st.session_state.total_losses = 0
+            st.session_state.log_records = [f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot has been started."]
             st.rerun()
             
-    with col2:
-        if st.button("Stop Bot", disabled=not st.session_state.bot_is_running):
-            st.session_state.bot_is_running = False
-            st.session_state.bot_state['status'] = "Bot stopped by user."
-            st.warning("Bot is stopping...")
-            st.rerun()
-
-st.markdown("---")
-
-st.header("Live Bot Status")
-status_placeholder = st.empty()
-wins_losses_placeholder = st.empty()
-balance_placeholder = st.empty()
-
-while st.session_state.bot_is_running:
-    state = st.session_state.bot_state
-    
-    status_placeholder.info(f"**Bot Status:** {state.get('status', 'Stopped')}")
-    wins_losses_placeholder.write(f"**Wins:** {state.get('total_wins', 0)} | **Losses:** {state.get('total_losses', 0)}")
-    
-    current_balance = state.get('current_balance')
-    if current_balance is not None:
-        balance_placeholder.metric("Current Balance", f"{current_balance:.2f}$", 
-                                  delta=round(current_balance - state.get('initial_balance', current_balance), 2), 
-                                  delta_color="normal")
-    else:
-        balance_placeholder.info("Fetching balance...")
+    if stop_button:
+        st.session_state.bot_running = False
+        st.session_state.is_trade_open = False
+        st.session_state.log_records.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 Bot stopped by user.")
+        st.rerun()
         
-    time.sleep(1)
+elif st.session_state.page == 'logs':
+    st.header("2. Live Bot Logs")
+    st.markdown(f"*Wins: {st.session_state.total_wins}* | *Losses: {st.session_state.total_losses}*")
+    
+    current_balance = st.session_state.current_balance
+    if current_balance is not None and st.session_state.initial_balance is not None:
+        balance_change = round(current_balance - st.session_state.initial_balance, 2)
+        st.metric("Current Balance", f"{current_balance:.2f}$", delta=balance_change)
+    else:
+        st.info("Balance information not available yet.")
+
+    with st.container(height=600):
+        st.text_area("Logs", "\n".join(st.session_state.log_records), height=600)
+    
+st.markdown("---")
+col1, col2 = st.columns(2)
+with col1:
+    if st.button("Settings"):
+        st.session_state.page = 'inputs'
+        st.rerun()
+with col2:
+    if st.button("Logs"):
+        st.session_state.page = 'logs'
+        st.rerun()
+        
+time.sleep(1)
+if st.session_state.bot_running or st.session_state.is_trade_open:
     st.rerun()
-
-# Display final status after the loop ends
-state = st.session_state.bot_state
-status_placeholder.info(f"**Bot Status:** {state.get('status', 'Stopped')}")
-wins_losses_placeholder.write(f"**Wins:** {state.get('total_wins', 0)} | **Losses:** {state.get('total_losses', 0)}")
-
-if state.get('current_balance') is not None:
-    balance_placeholder.metric("Current Balance", f"{state['current_balance']:.2f}$", 
-                              delta=round(state['current_balance'] - state.get('initial_balance', state['current_balance']), 2), 
-                              delta_color="normal")
-else:
-    balance_placeholder.info("Balance not available.")
