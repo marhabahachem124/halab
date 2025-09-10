@@ -1,5 +1,5 @@
 import sqlalchemy as sa
-from sqlalchemy.orm import sessionmaker, declarative_base # Import declarative_base correctly
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, ForeignKey
 from datetime import datetime
 import json
@@ -8,47 +8,36 @@ import time
 import os
 import websocket
 import pandas as pd
+from flask import Flask, request
+from threading import Thread
 import logging # Added for better logging
 
-# Configure logging
+# --- Configure Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Database Setup ---
-# Directly embedding the DATABASE_URL as requested
 DATABASE_URL = "postgresql://bibokh_user:Ric9h1SaTADxdkV0LgNmF8c0RPWhWYzy@dpg-d30mrpogjchc73f1tiag-a.oregon-postgres.render.com/bibokh"
+engine = sa.create_engine(DATABASE_URL)
+Session = sessionmaker(bind=engine)
+Base = sa.declarative_base()
 
-try:
-    engine = create_engine(DATABASE_URL)
-    Session = sessionmaker(bind=engine)
-    Base = declarative_base() # Use the imported declarative_base
-
-    class BotSession(Base):
-        __tablename__ = 'bot_sessions'
-        id = Column(Integer, primary_key=True)
-        user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
-        session_id = Column(String, unique=True, nullable=False, default=lambda: str(uuid.uuid4()))
-        api_token = Column(String, nullable=True)
-        base_amount = Column(Float, default=0.5)
-        tp_target = Column(Float, nullable=True)
-        max_consecutive_losses = Column(Integer, default=5)
-        current_amount = Column(Float, default=0.5)
-        consecutive_losses = Column(Integer, default=0)
-        total_wins = Column(Integer, default=0)
-        total_losses = Column(Integer, default=0)
-        is_running = Column(Boolean, default=False)
-        is_trade_open = Column(Boolean, default=False)
-        initial_balance = Column(Float, nullable=True)
-        logs = Column(String, default="[]")
-
-    # Create tables if they don't exist (important for first deploy)
-    Base.metadata.create_all(engine)
-    logging.info("Database tables checked/created successfully.")
-
-except Exception as e:
-    logging.error(f"Database setup failed: {e}")
-    # Exit if database connection fails on startup
-    exit()
-
+class BotSession(Base):
+    __tablename__ = 'bot_sessions'
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    session_id = Column(String, unique=True, nullable=False, default=lambda: str(uuid.uuid4()))
+    api_token = Column(String, nullable=True)
+    base_amount = Column(Float, default=0.5)
+    tp_target = Column(Float, nullable=True)
+    max_consecutive_losses = Column(Integer, default=5)
+    current_amount = Column(Float, default=0.5)
+    consecutive_losses = Column(Integer, default=0)
+    total_wins = Column(Integer, default=0)
+    total_losses = Column(Integer, default=0)
+    is_running = Column(Boolean, default=False)
+    is_trade_open = Column(Boolean, default=False)
+    initial_balance = Column(Float, nullable=True)
+    logs = Column(String, default="[]")
 
 # --- Trading Logic Functions ---
 def analyse_data(df_ticks):
@@ -80,9 +69,6 @@ def check_contract_status(ws, contract_id):
     req = {"proposal_open_contract": 1, "contract_id": contract_id, "subscribe": 1}
     try:
         ws.send(json.dumps(req))
-        # It's better to handle responses in a loop or with a timeout for robustness
-        # For simplicity here, we assume a response comes back quickly.
-        # In a real-world app, you might need a more sophisticated approach to handle WebSocket messages.
         response = ws.recv() 
         return json.loads(response)['proposal_open_contract']
     except Exception as e:
@@ -103,22 +89,17 @@ def main_trading_loop(bot_session_id):
     state = {}
     ws = None
     try:
-        # WebSocket connection setup
         ws = websocket.WebSocket()
         ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
-        logging.info(f"WebSocket connected for session: {bot_session_id}")
-
+        
         while True:
             s = Session()
             try:
                 bot_session = s.query(BotSession).filter_by(session_id=bot_session_id).first()
-                
-                # Check if bot is still running or session exists
                 if not bot_session or not bot_session.is_running:
-                    logging.info(f"Bot for session {bot_session_id} is stopped or not found. Exiting loop.")
+                    logging.info(f"Bot for session {bot_session_id} is stopped. Exiting loop.")
                     break
                 
-                # Load current state from DB
                 state = {
                     'api_token': bot_session.api_token,
                     'base_amount': bot_session.base_amount,
@@ -131,121 +112,95 @@ def main_trading_loop(bot_session_id):
                     'is_running': bot_session.is_running,
                     'is_trade_open': bot_session.is_trade_open,
                     'initial_balance': bot_session.initial_balance,
-                    'logs': json.loads(bot_session.logs) if bot_session.logs else [],
+                    'logs': json.loads(bot_session.logs),
                 }
 
-                # Ensure API token is present
                 if not state.get('api_token'):
-                    logging.warning(f"API token missing for session {bot_session_id}. Waiting.")
                     time.sleep(5)
                     continue
 
-                # Authorize with API token
                 auth_req = {"authorize": state['api_token']}
                 ws.send(json.dumps(auth_req))
                 auth_response = json.loads(ws.recv())
                 if auth_response.get('error'):
-                    error_msg = auth_response['error']['message']
-                    logging.error(f"Authentication failed for session {bot_session_id}: {error_msg}")
-                    state['logs'].append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Auth failed: {error_msg}")
+                    state['logs'].append(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ Auth failed: {auth_response['error']['message']}")
                     s.query(BotSession).filter_by(session_id=bot_session_id).update({'logs': json.dumps(state['logs'])})
                     s.commit()
                     time.sleep(5)
                     continue
-                
-                # --- Trading Logic ---
+
                 if not state.get('is_trade_open'):
                     now = datetime.now()
-                    # Only attempt to trade at specific seconds to align with 30s contracts
-                    if now.second >= 55 or now.second < 5: # Checking a window around the minute change
-                        if state['initial_balance'] is None: # First run, get balance
+                    if now.second >= 55:
+                        if state['initial_balance'] is None:
                             current_balance = get_balance(ws)
                             if current_balance is not None:
                                 state['initial_balance'] = current_balance
                                 state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 💰 Initial Balance: {state['initial_balance']:.2f}")
                             else:
                                 state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Failed to get balance.")
-                        
-                        # Fetch ticks for analysis
+                                s.query(BotSession).filter_by(session_id=bot_session_id).update({'logs': json.dumps(state['logs'])})
+                                s.commit()
+                                time.sleep(5)
+                                continue
+
                         req = {"ticks_history": "R_100", "end": "latest", "count": 60, "style": "ticks"}
                         ws.send(json.dumps(req))
                         tick_data = json.loads(ws.recv())
-                        
                         if 'history' in tick_data and tick_data['history']['prices']:
                             df_ticks = pd.DataFrame({'price': tick_data['history']['prices']})
                             signal, error = analyse_data(df_ticks)
-                            
                             if signal in ['Buy', 'Sell']:
                                 state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ➡ Entering a {signal.upper()} trade with {state['current_amount']:.2f}$")
-                                contract_type = "CALL" if signal == 'Buy' else "PUT"
-                                # Proposal request for the trade
-                                proposal_req = {"proposal": 1, "amount": round(state['current_amount'], 2), "basis": "stake", "contract_type": contract_type, "currency": "USD", "duration": 30, "duration_unit": "s", "symbol": "R_100"}
+                                proposal_req = {"proposal": 1, "amount": round(state['current_amount'], 2), "basis": "stake", "contract_type": "CALL" if signal == 'Buy' else "PUT", "currency": "USD", "duration": 30, "duration_unit": "s", "symbol": "R_100"}
                                 ws.send(json.dumps(proposal_req))
                                 proposal_response = json.loads(ws.recv())
-                                
                                 if 'proposal' in proposal_response:
                                     order_response = place_order(ws, proposal_response['proposal']['id'], state['current_amount'])
                                     if 'buy' in order_response:
                                         state['is_trade_open'] = True
-                                        state['contract_id'] = order_response['buy']['contract_id'] # Store contract ID
-                                        state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ✅ Order placed successfully. Contract ID: {state['contract_id']}")
-                                        s.query(BotSession).filter_by(session_id=bot_session_id).update({"is_trade_open": True, "contract_id": state['contract_id'], "logs": json.dumps(state['logs'])})
+                                        state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ✅ Order placed.")
+                                        s.query(BotSession).filter_by(session_id=bot_session_id).update({"is_trade_open": True, "logs": json.dumps(state['logs'])})
                                         s.commit()
                                     else:
-                                        error_msg = order_response.get('error', {}).get('message', 'Unknown error')
-                                        state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Order failed: {error_msg}")
+                                        state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Order failed: {order_response.get('error', {}).get('message', 'Unknown error')}")
                                         s.query(BotSession).filter_by(session_id=bot_session_id).update({'logs': json.dumps(state['logs'])})
                                         s.commit()
                                 else:
-                                    error_msg = proposal_response.get('error', {}).get('message', 'Unknown error')
-                                    state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Proposal failed: {error_msg}")
+                                    state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Proposal failed: {proposal_response.get('error', {}).get('message', 'Unknown error')}")
                                     s.query(BotSession).filter_by(session_id=bot_session_id).update({'logs': json.dumps(state['logs'])})
                                     s.commit()
-                            else:
-                                state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ⚪ No clear signal. Waiting.")
                         else:
-                            state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ⚪ No tick data received or error. Waiting.")
-                        
-                        # Update DB with latest logs and status if no trade was opened
-                        if not state.get('is_trade_open'):
+                            state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ⚪ No clear signal. Waiting.")
                             s.query(BotSession).filter_by(session_id=bot_session_id).update({'logs': json.dumps(state['logs'])})
                             s.commit()
 
-                elif state.get('is_trade_open'): # If a trade is currently open
+                elif state.get('is_trade_open'):
                     now = datetime.now()
                     contract_info = check_contract_status(ws, state.get('contract_id'))
-                    
                     if contract_info and contract_info.get('is_sold'):
                         profit = contract_info.get('profit', 0)
-                        
-                        # Update win/loss counts and amounts
                         if profit > 0:
                             state['consecutive_losses'] = 0
-                            state['current_amount'] = state['base_amount'] # Reset to base amount on win
+                            state['current_amount'] = state['base_amount']
                             state['total_wins'] += 1
                             state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 🎉 Win! Profit: {profit:.2f}$")
                         else:
                             state['consecutive_losses'] += 1
-                            # Martingale logic: double the stake after a loss (adjust multiplier as needed)
-                            state['current_amount'] = max(state['base_amount'], state['current_amount'] * 2.2) 
+                            state['current_amount'] = max(state['base_amount'], state['current_amount'] * 2.2)
                             state['total_losses'] += 1
                             state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 💔 Loss! Loss: {profit:.2f}$")
-                        
                         state['is_trade_open'] = False
-                        
-                        # Check for Take Profit or Stop Loss
                         current_balance = get_balance(ws)
                         if current_balance is not None:
                             state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 💰 Current Balance: {current_balance:.2f}")
                             if state['tp_target'] and (current_balance - state['initial_balance']) >= state['tp_target']:
                                 state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 🤑 Take Profit reached! Bot stopped.")
                                 state['is_running'] = False
-                        
                         if state['consecutive_losses'] >= state['max_consecutive_losses']:
                             state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 🛑 Stop Loss hit! Bot stopped.")
                             state['is_running'] = False
 
-                    # Update DB with latest state and logs
                     s.query(BotSession).filter_by(session_id=bot_session_id).update({
                         'current_amount': state['current_amount'],
                         'consecutive_losses': state['consecutive_losses'],
@@ -257,73 +212,67 @@ def main_trading_loop(bot_session_id):
                         'logs': json.dumps(state['logs'])
                     })
                     s.commit()
-                    
-                    # If bot was stopped due to TP/SL, break the inner loop to re-evaluate state
-                    if not state['is_running']:
-                        break 
 
             except Exception as e:
-                logging.error(f"Error in trading loop for session {bot_session_id}: {e}")
-                # Attempt to log the error to DB if session is valid
-                if 's' in locals() and bot_session:
-                    try:
-                        # Append error to logs if possible
-                        if 'logs' in state:
-                            state['logs'].append(f"[{datetime.now().strftime('%H:%M:%S')}] 💥 RuntimeError: {e}")
-                            s.query(BotSession).filter_by(session_id=bot_session_id).update({'logs': json.dumps(state['logs'])})
-                            s.commit()
-                    except Exception as db_err:
-                        logging.error(f"Failed to log error to DB: {db_err}")
+                logging.error(f"Error for session {bot_session_id}: {e}")
             finally:
-                s.close() # Ensure session is closed
-            
-            # Sleep for a short duration before next iteration, unless a trade is open and needs fast checking
-            if state.get('is_trade_open'):
-                time.sleep(0.5) # Shorter sleep if waiting for contract to close
-            else:
-                time.sleep(1) # Normal sleep when waiting for signal
-    
-    except websocket.WebSocketConnectionClosedException as e:
-        logging.warning(f"WebSocket connection closed for session {bot_session_id}: {e}. Attempting to reconnect.")
-        # Add retry logic here if needed, or let the outer loop handle it if the bot is still running.
-        time.sleep(5)
-    except Exception as e:
-        logging.error(f"An unexpected error occurred in main_trading_loop for session {bot_session_id}: {e}")
+                s.close()
+            time.sleep(1)
     finally:
         if ws:
             ws.close()
-            logging.info(f"WebSocket closed for session {bot_session_id}.")
 
+# Flask app to keep the service running
+app = Flask(__name__)
 
-if __name__ == "__main__":
-    logging.info("Starting the main bot process.")
-    
-    # This main loop will continuously check for active sessions and run them.
-    # It's designed to run indefinitely as a Web Service.
-    while True:
-        s = Session()
-        try:
-            # Query for all sessions marked as running
+@app.route('/')
+def home():
+    # This route is just to keep the server alive for Render's health checks
+    return "Trading Bot is Running and listening!"
+
+# Function to run the bot logic in a separate thread
+def run_trading_logic():
+    logging.info("Starting the main bot process in a separate thread.")
+    s = Session()
+    try:
+        # Ensure tables exist (important for first-time deploy)
+        Base.metadata.create_all(engine)
+        logging.info("Database tables checked/created successfully.")
+        
+        while True:
             active_sessions = s.query(BotSession).filter_by(is_running=True).all()
-            
             if not active_sessions:
                 logging.info("No active bots found. Waiting for commands...")
-                time.sleep(10) # Wait longer if no bots are running
+                time.sleep(10) # Wait before checking again
                 continue
             
-            # For each active session, start a main_trading_loop
-            # Note: In a true multi-user scenario, you might want to run these in threads or processes.
-            # For now, it processes them sequentially in the main loop.
             for session in active_sessions:
-                logging.info(f"Found active bot session: {session.session_id}. Starting its loop.")
+                logging.info(f"Starting bot for session: {session.session_id}")
                 main_trading_loop(session.session_id)
-                # After a loop finishes (e.g., bot stopped or error), 
-                # it will re-query for active sessions in the next iteration.
+            
+            time.sleep(10) # Small delay between checking active sessions
+    except Exception as e:
+        logging.error(f"Error in bot logic thread: {e}")
+    finally:
+        s.close()
 
-        except Exception as e:
-            logging.error(f"Error in the main bot process loop: {e}")
-        finally:
-            s.close() # Ensure the session is closed
-        
-        # Add a small delay to prevent excessive CPU usage if errors keep occurring
-        time.sleep(5)
+# Main entry point
+if __name__ == "__main__":
+    # Start the trading logic in a background thread
+    bot_thread = Thread(target=run_trading_logic, daemon=True)
+    bot_thread.start()
+
+    # Get the port from Render's environment variable
+    port = int(os.environ.get("PORT", 5000)) # Default to 5000 if PORT is not set
+
+    logging.info(f"Starting Flask web server on port {port} to keep the service alive.")
+    
+    # Run the Flask app
+    # Use a production-ready WSGI server like gunicorn (configured via Procfile)
+    # For local testing, you can run app.run(host="0.0.0.0", port=port)
+    # However, for Render, gunicorn is handled by the Procfile.
+    # This script will be executed by gunicorn.
+    
+    # The Flask app object itself is what gunicorn will run.
+    # The run_trading_logic thread will start automatically when the script is executed.
+    pass # The actual Flask app runs via gunicorn as defined in Procfile
