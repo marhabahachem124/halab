@@ -1,8 +1,9 @@
 import streamlit as st
 import sqlalchemy as sa
-from sqlalchemy.orm import sessionmaker, declarative_base # Corrected import
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, ForeignKey
-from datetime import datetime
+# تصحيح الاستيراد لـ declarative_base
+from sqlalchemy.ext.declarative import declarative_base
 import json
 import uuid
 import time
@@ -12,11 +13,10 @@ import pandas as pd
 from threading import Thread
 
 # --- Database Setup ---
-# تأكد أن هذا الرابط صحيح ويشير إلى قاعدة بياناتك
 DATABASE_URL = "postgresql://deriv_pv02_user:pkCXarwp82IBTnoIWySO8CuAVLUcw1B1@dpg-d30otpogjchc73f4bieg-a.oregon-postgres.render.com/deriv_pv02"
 engine = sa.create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
-Base = declarative_base() # Use the imported declarative_base
+Base = declarative_base() # استخدام declarative_base بشكل صحيح
 
 class User(Base):
     __tablename__ = 'users'
@@ -149,7 +149,7 @@ def check_contract_status(ws, contract_id):
     req = {"proposal_open_contract": 1, "contract_id": contract_id, "subscribe": 1}
     try:
         ws.send(json.dumps(req))
-        response = ws.recv()
+        response = ws.recv() 
         return json.loads(response)['proposal_open_contract']
     except Exception:
         return None
@@ -176,7 +176,7 @@ def main_trading_loop(bot_session_id):
                 if not bot_session or not bot_session.is_running:
                     print(f"Bot for session {bot_session_id} is stopped. Exiting loop.")
                     break
-
+                
                 state = {
                     'api_token': bot_session.api_token,
                     'base_amount': bot_session.base_amount,
@@ -308,16 +308,11 @@ def main_trading_loop(bot_session_id):
 # Start the bot logic in a separate thread
 if 'bot_thread' not in st.session_state:
     st.session_state.bot_thread = None
-
+    
 def start_bot_thread(session_id):
-    if st.session_state.bot_thread is None or not st.session_state.bot_thread.is_alive():
-        st.session_state.bot_thread = Thread(target=main_trading_loop, args=(session_id,))
-        st.session_state.bot_thread.daemon = True
-        st.session_state.bot_thread.start()
-        print(f"Bot thread started for session: {session_id}") # Debug print
-    else:
-        print(f"Bot thread for session {session_id} is already alive.") # Debug print
-
+    st.session_state.bot_thread = Thread(target=main_trading_loop, args=(session_id,))
+    st.session_state.bot_thread.daemon = True
+    st.session_state.bot_thread.start()
 
 # --- Streamlit UI ---
 if 'logged_in' not in st.session_state:
@@ -368,12 +363,12 @@ else:
         st.write(f"**Base Amount:** {base_amount}$")
         st.write(f"**TP Target:** {tp_target}$")
         st.write(f"**Max Losses:** {max_losses}")
-        # Safely display initial_balance, showing 0.00 if None
+        
+        # تصحيح لمنع خطأ تنسيق None
         if initial_balance is not None:
-            st.metric("Initial Balance", f"${initial_balance:.2f}")
+            st.write(f"**Initial Balance:** {initial_balance:.2f}$")
         else:
-            st.metric("Initial Balance", "$0.00")
-
+            st.write(f"**Initial Balance:** N/A") # أو أي قيمة افتراضية أخرى
             
     col1, col2 = st.columns(2)
     with col1:
@@ -406,7 +401,5 @@ else:
     logs = st.session_state.session_data.get('logs', [])
     with st.container(height=600):
         st.text_area("Logs", "\n".join(logs), height=600, key="logs_textarea")
-    
-    # Rerun to refresh logs every 5 seconds
     time.sleep(5)
     st.rerun()
