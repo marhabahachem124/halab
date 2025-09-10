@@ -139,7 +139,7 @@ with st.expander("Bot Settings", expanded=True):
 st.markdown("---")
 st.header("Live Bot Status")
 
-# --- Display UI elements ---
+# --- Placeholders for dynamic UI elements ---
 status_placeholder = st.empty()
 wins_losses_placeholder = st.empty()
 balance_placeholder = st.empty()
@@ -147,7 +147,7 @@ timer_placeholder = st.empty()
 
 state = st.session_state
 
-# --- Get and display balance immediately if token is present ---
+# --- Fetch balance on startup if token is available ---
 if state.user_token and state.balance_check_needed:
     ws = None
     try:
@@ -173,7 +173,7 @@ if state.user_token and state.balance_check_needed:
         if ws and ws.connected:
             ws.close()
     
-# --- Update UI based on current state ---
+# --- Update UI with initial status and balance ---
 status_placeholder.info(f"**Bot Status:** {st.session_state.bot_status}")
 wins_losses_placeholder.write(f"**Wins:** {state.total_wins} | **Losses:** {state.total_losses}")
 
@@ -196,12 +196,12 @@ if st.session_state.bot_running:
         if auth_response.get('error'):
             st.session_state.bot_status = f"Auth failed: {auth_response['error']['message']}"
             st.session_state.bot_running = False
-            st.rerun()
+            st.rerun() # Rerun only if auth fails to update status immediately
 
         if not state.is_trade_open:
             now = datetime.now()
             seconds_to_wait = 60 - now.second
-            st.session_state.bot_status = f"Analysing... Waiting for the next minute"
+            st.session_state.bot_status = f"Analysing... ({seconds_to_wait}s until next minute)"
             timer_placeholder.metric("Time until next analysis", f"{seconds_to_wait}s")
             
             if now.second >= 55:
@@ -301,20 +301,22 @@ if st.session_state.bot_running:
         if ws and ws.connected:
             ws.close()
     
-    # Update the status placeholder immediately after any change
+    # --- Update UI elements at the end of the loop if bot is running ---
     status_placeholder.info(f"**Bot Status:** {st.session_state.bot_status}")
     wins_losses_placeholder.write(f"**Wins:** {state.total_wins} | **Losses:** {state.total_losses}")
     if state.current_balance is not None:
         balance_placeholder.metric("Current Balance", f"{state.current_balance:.2f}$", 
                                   delta=round(state.current_balance - state.initial_balance, 2), 
                                   delta_color="normal")
+    else:
+        balance_placeholder.info("Fetching balance...")
 
-    if st.session_state.bot_running: # Only rerun if bot is still supposed to be running
+    if st.session_state.bot_running:
         time.sleep(1)
-        st.rerun()
+        st.rerun() # Rerun to update timer and check status again
 
 else:
-    # Bot is stopped, update UI with final status
+    # --- Bot is stopped ---
     status_placeholder.info(f"**Bot Status:** {st.session_state.bot_status}")
     if state.current_balance is not None:
         balance_placeholder.metric("Current Balance", f"{state.current_balance:.2f}$", 
