@@ -4,6 +4,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, ForeignKey
 # تصحيح الاستيراد لـ declarative_base
 from sqlalchemy.ext.declarative import declarative_base
+from datetime import datetime
 import json
 import uuid
 import time
