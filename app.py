@@ -1,29 +1,26 @@
+import streamlit as st
 import sqlalchemy as sa
-# تم تغيير هذا الاستيراد ليناسب SQLAlchemy 2.0+
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, ForeignKey
 from datetime import datetime
 import json
 import uuid
-import time
 import os
+import time
+import streamlit.components.v1 as components
 import websocket
 import pandas as pd
 from flask import Flask
 from threading import Thread
 
 # --- Database Setup ---
-# تأكد من أن هذا الرابط صحيح
 DATABASE_URL = "postgresql://bibokh_user:Ric9h1SaTADxdkV0LgNmF8c0RPWhWYzy@dpg-d30mrpogjchc73f1tiag-a.oregon-postgres.render.com/bibokh"
 engine = sa.create_engine(DATABASE_URL)
-
-# هنا يتم إنشاء Base باستخدام الطريقة الحديثة
-Base = declarative_base() 
-
 Session = sessionmaker(bind=engine)
+Base = sa.declarative_base()
 
-# تعريف الجداول
-class User(Base): # هذا الجدول ليس مستخدمًا في trading_bot.py ولكنه قد يكون موجودًا في app.py
+# --- Models ---
+class User(Base):
     __tablename__ = 'users'
     id = Column(Integer, primary_key=True)
     email = Column(String, unique=True, nullable=False)
@@ -31,7 +28,7 @@ class User(Base): # هذا الجدول ليس مستخدمًا في trading_bot
 class BotSession(Base):
     __tablename__ = 'bot_sessions'
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False) # سيظل يعمل حتى لو لم يتم استخدامه هنا، كمرجع
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     session_id = Column(String, unique=True, nullable=False, default=lambda: str(uuid.uuid4()))
     api_token = Column(String, nullable=True)
     base_amount = Column(Float, default=0.5)
@@ -44,7 +41,86 @@ class BotSession(Base):
     is_running = Column(Boolean, default=False)
     is_trade_open = Column(Boolean, default=False)
     initial_balance = Column(Float, nullable=True)
+    contract_id = Column(String, nullable=True)
     logs = Column(String, default="[]")
+
+# Create tables if they don't exist
+Base.metadata.create_all(engine)
+
+# --- Authentication & Session Management ---
+ALLOWED_EMAILS_FILE = 'user_ids.txt'
+
+def is_email_allowed(email):
+    try:
+        if os.path.exists(ALLOWED_EMAILS_FILE):
+            with open(ALLOWED_EMAILS_FILE, 'r') as f:
+                allowed_emails = {line.strip() for line in f}
+                return email in allowed_emails
+        return False
+    except Exception:
+        return False
+
+def get_or_create_user(email):
+    s = Session()
+    try:
+        user = s.query(User).filter_by(email=email).first()
+        if not user:
+            user = User(email=email)
+            s.add(user)
+            s.commit()
+            s.refresh(user)
+        return user
+    finally:
+        s.close()
+
+def get_or_create_bot_session(user):
+    s = Session()
+    try:
+        bot_session = s.query(BotSession).filter_by(user_id=user.id).first()
+        if not bot_session:
+            bot_session = BotSession(user_id=user.id)
+            s.add(bot_session)
+            s.commit()
+            s.refresh(bot_session)
+        return bot_session
+    finally:
+        s.close()
+
+def load_bot_state(session_id):
+    s = Session()
+    try:
+        bot_session = s.query(BotSession).filter_by(session_id=session_id).first()
+        if bot_session:
+            return {
+                'api_token': bot_session.api_token,
+                'base_amount': bot_session.base_amount,
+                'tp_target': bot_session.tp_target,
+                'max_consecutive_losses': bot_session.max_consecutive_losses,
+                'current_amount': bot_session.current_amount,
+                'consecutive_losses': bot_session.consecutive_losses,
+                'total_wins': bot_session.total_wins,
+                'total_losses': bot_session.total_losses,
+                'is_running': bot_session.is_running,
+                'is_trade_open': bot_session.is_trade_open,
+                'initial_balance': bot_session.initial_balance,
+                'contract_id': bot_session.contract_id,
+                'logs': json.loads(bot_session.logs) if bot_session.logs else [],
+            }
+        return {}
+    finally:
+        s.close()
+
+def update_bot_settings(session_id, new_settings):
+    s = Session()
+    try:
+        bot_session = s.query(BotSession).filter_by(session_id=session_id).first()
+        if bot_session:
+            for key, value in new_settings.items():
+                if hasattr(bot_session, key):
+                    setattr(bot_session, key, value)
+            s.commit()
+    finally:
+        s.close()
 
 # --- Trading Logic Functions ---
 def analyse_data(df_ticks):
@@ -76,8 +152,15 @@ def check_contract_status(ws, contract_id):
     try:
         ws.send(json.dumps(req))
         response = ws.recv() 
-        return json.loads(response)['proposal_open_contract']
-    except Exception:
+        # Check if response is valid JSON and contains the expected key
+        parsed_response = json.loads(response)
+        if 'proposal_open_contract' in parsed_response:
+            return parsed_response['proposal_open_contract']
+        else:
+            print(f"Unexpected response structure from check_contract_status: {parsed_response}")
+            return None
+    except Exception as e:
+        print(f"Error in check_contract_status: {e}")
         return None
 
 def get_balance(ws):
@@ -115,6 +198,7 @@ def main_trading_loop(bot_session_id):
                     'is_running': bot_session.is_running,
                     'is_trade_open': bot_session.is_trade_open,
                     'initial_balance': bot_session.initial_balance,
+                    'contract_id': bot_session.contract_id,
                     'logs': json.loads(bot_session.logs),
                 }
 
@@ -140,6 +224,8 @@ def main_trading_loop(bot_session_id):
                             if current_balance is not None:
                                 state['initial_balance'] = current_balance
                                 state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 💰 Initial Balance: {state['initial_balance']:.2f}")
+                                s.query(BotSession).filter_by(session_id=bot_session_id).update({'initial_balance': state['initial_balance'], 'logs': json.dumps(state['logs'])})
+                                s.commit()
                             else:
                                 state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Failed to get balance.")
                                 s.query(BotSession).filter_by(session_id=bot_session_id).update({'logs': json.dumps(state['logs'])})
@@ -162,8 +248,9 @@ def main_trading_loop(bot_session_id):
                                     order_response = place_order(ws, proposal_response['proposal']['id'], state['current_amount'])
                                     if 'buy' in order_response:
                                         state['is_trade_open'] = True
-                                        state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ✅ Order placed.")
-                                        s.query(BotSession).filter_by(session_id=bot_session_id).update({"is_trade_open": True, "logs": json.dumps(state['logs'])})
+                                        state['contract_id'] = order_response['buy']['contract_id']
+                                        state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ✅ Order placed. Contract ID: {state['contract_id']}")
+                                        s.query(BotSession).filter_by(session_id=bot_session_id).update({"is_trade_open": True, "contract_id": state['contract_id'], "logs": json.dumps(state['logs'])})
                                         s.commit()
                                     else:
                                         state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Order failed: {order_response.get('error', {}).get('message', 'Unknown error')}")
@@ -178,9 +265,9 @@ def main_trading_loop(bot_session_id):
                             s.query(BotSession).filter_by(session_id=bot_session_id).update({'logs': json.dumps(state['logs'])})
                             s.commit()
 
-                elif state.get('is_trade_open'):
+                elif state.get('is_trade_open') and state.get('contract_id'):
                     now = datetime.now()
-                    contract_info = check_contract_status(ws, state.get('contract_id'))
+                    contract_info = check_contract_status(ws, state['contract_id'])
                     if contract_info and contract_info.get('is_sold'):
                         profit = contract_info.get('profit', 0)
                         if profit > 0:
@@ -194,6 +281,7 @@ def main_trading_loop(bot_session_id):
                             state['total_losses'] += 1
                             state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 💔 Loss! Loss: {profit:.2f}$")
                         state['is_trade_open'] = False
+                        state['contract_id'] = None
                         current_balance = get_balance(ws)
                         if current_balance is not None:
                             state['logs'].append(f"[{now.strftime('%H:%M:%S')}] 💰 Current Balance: {current_balance:.2f}")
@@ -212,6 +300,7 @@ def main_trading_loop(bot_session_id):
                         'is_running': state['is_running'],
                         'is_trade_open': state['is_trade_open'],
                         'initial_balance': state['initial_balance'],
+                        'contract_id': state['contract_id'],
                         'logs': json.dumps(state['logs'])
                     })
                     s.commit()
@@ -220,70 +309,63 @@ def main_trading_loop(bot_session_id):
                 print(f"Error for session {bot_session_id}: {e}")
             finally:
                 s.close()
-            time.sleep(1)
+            time.sleep(1) # Small delay to prevent excessive polling
     finally:
         if ws:
             ws.close()
 
-# Flask app to keep the service running and respond to pings
+# --- Flask App for Web Service ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Trading Bot is Running!"
+    return "Trading Bot Service is running!"
 
-# Function to initialize database tables if they don't exist
-def initialize_database():
-    try:
-        Base.metadata.create_all(engine)
-        print("Database tables checked/created successfully.")
-    except Exception as e:
-        print(f"Error initializing database: {e}")
-
-# Function to start the bot logic in a separate thread
-def start_trading_bot_thread():
-    print("Starting trading bot logic in a separate thread.")
-    try:
-        active_sessions = s.query(BotSession).filter_by(is_running=True).all()
-        if not active_sessions:
-            print("No active bots found initially. Waiting for commands...")
-            while True: # Keep checking for active bots
-                time.sleep(10)
-                s_wait = Session()
-                try:
-                    current_active_sessions = s_wait.query(BotSession).filter_by(is_running=True).all()
-                    if current_active_sessions:
-                        print("Found new active bots. Starting them now.")
-                        for session in current_active_sessions:
-                            main_trading_loop(session.session_id)
-                        # If we found active sessions, we can break this waiting loop if we only want to start once
-                        # or let it continue to monitor for changes. For now, let's assume we want it to restart if needed.
-                        break # Exit this waiting loop once we found active sessions
-                finally:
-                    s_wait.close()
-        else:
-            for session in active_sessions:
-                main_trading_loop(session.session_id)
-    except Exception as e:
-        print(f"Error in trading bot thread: {e}")
-    finally:
-        s.close()
-
-# Main function to start both the web server and the bot thread
-def run_app():
-    initialize_database() # Ensure tables are created before starting anything else
-
-    # Start the trading bot logic in a daemon thread so it runs in the background
-    bot_thread = Thread(target=start_trading_bot_thread)
+# --- Main function to start both bot and web server ---
+def run_bot_and_server():
+    bot_thread = Thread(target=start_all_bots)
     bot_thread.daemon = True # Allows the main program to exit even if this thread is running
     bot_thread.start()
 
-    # Start the Flask web server to listen on the port provided by Render
-    port = int(os.environ.get("PORT", 5000)) # Default to 5000 if PORT is not set
-    print(f"Starting Flask web server on port {port}")
-    app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 5000))
+    # Use gunicorn to run this Flask app
+    # The command below will be executed by Procfile
+    # app.run(host="0.0.0.0", port=port) 
+
+# --- Function to start all active bots ---
+def start_all_bots():
+    s = Session()
+    try:
+        print("Database tables checked/created successfully.")
+        
+        print("Starting the main bot process.")
+        while True:
+            active_sessions = s.query(BotSession).filter_by(is_running=True).all()
+            if not active_sessions:
+                print("No active bots found. Waiting for commands...")
+                time.sleep(10)
+                continue
+            
+            for session in active_sessions:
+                print(f"Starting bot for session: {session.session_id}")
+                # Ensure each bot runs in its own thread if multiple sessions are active
+                bot_instance_thread = Thread(target=main_trading_loop, args=(session.session_id,))
+                bot_instance_thread.daemon = True
+                bot_instance_thread.start()
+            
+            # Wait before checking for active sessions again
+            time.sleep(10) 
+    except Exception as e:
+        print(f"Error in start_all_bots: {e}")
+    finally:
+        s.close()
 
 if __name__ == "__main__":
-    # Need to create a session for the initial query in start_trading_bot_thread
-    s = Session() 
-    run_app()
+    # This block is for local testing and won't be used by gunicorn on Render
+    # If you run this file directly, it will start the bot logic and the Flask server
+    if "RENDER" not in os.environ: # Check if running on Render
+        run_bot_and_server()
+    else:
+        # On Render, gunicorn will load this app, so this part isn't directly executed
+        # but Flask app object is available.
+        pass
