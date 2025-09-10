@@ -2,8 +2,7 @@ import streamlit as st
 import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, ForeignKey
-# تصحيح الاستيراد لـ declarative_base
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.ext.declarative import declarative_base # Correct import for declarative_base
 from datetime import datetime
 import json
 import uuid
@@ -14,10 +13,11 @@ import pandas as pd
 from threading import Thread
 
 # --- Database Setup ---
+# تأكد أن هذا الرابط صحيح ويشير إلى قاعدة بياناتك
 DATABASE_URL = "postgresql://deriv_pv02_user:pkCXarwp82IBTnoIWySO8CuAVLUcw1B1@dpg-d30otpogjchc73f4bieg-a.oregon-postgres.render.com/deriv_pv02"
 engine = sa.create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
-Base = declarative_base() # استخدام declarative_base بشكل صحيح
+Base = declarative_base() # Corrected here
 
 class User(Base):
     __tablename__ = 'users'
@@ -245,11 +245,15 @@ def main_trading_loop(bot_session_id):
                                         s.query(BotSession).filter_by(session_id=bot_session_id).update({"is_trade_open": True, "contract_id": state['contract_id'], "logs": json.dumps(state['logs'])})
                                         s.commit()
                                     else:
-                                        state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Order failed: {order_response.get('error', {}).get('message', 'Unknown error')}")
+                                        # Now we can log the specific error from the platform
+                                        error_msg = order_response.get('error', {}).get('message', 'Unknown error')
+                                        state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Order failed: {error_msg}")
                                         s.query(BotSession).filter_by(session_id=bot_session_id).update({'logs': json.dumps(state['logs'])})
                                         s.commit()
                                 else:
-                                    state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Proposal failed: {proposal_response.get('error', {}).get('message', 'Unknown error')}")
+                                    # Now we can log the specific error from the platform
+                                    error_msg = proposal_response.get('error', {}).get('message', 'Unknown error')
+                                    state['logs'].append(f"[{now.strftime('%H:%M:%S')}] ❌ Proposal failed: {error_msg}")
                                     s.query(BotSession).filter_by(session_id=bot_session_id).update({'logs': json.dumps(state['logs'])})
                                     s.commit()
                         else:
@@ -364,12 +368,8 @@ else:
         st.write(f"**Base Amount:** {base_amount}$")
         st.write(f"**TP Target:** {tp_target}$")
         st.write(f"**Max Losses:** {max_losses}")
-        
-        # تصحيح لمنع خطأ تنسيق None
-        if initial_balance is not None:
+        if initial_balance:
             st.write(f"**Initial Balance:** {initial_balance:.2f}$")
-        else:
-            st.write(f"**Initial Balance:** N/A") # أو أي قيمة افتراضية أخرى
             
     col1, col2 = st.columns(2)
     with col1:
