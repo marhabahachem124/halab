@@ -4,3 +4,4 @@ sqlalchemy
 pandas
 websocket-client
 gunicorn
+flask
