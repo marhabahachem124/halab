@@ -1,22 +1,26 @@
 import streamlit as st
 import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, ForeignKey
+# <<< تم تصحيح الاستيراد هنا >>>
+from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, ForeignKey, declarative_base
+# <<< نهاية التصحيح >>>
 from datetime import datetime
 import json
 import uuid
 import time
 import os
+from threading import Thread
 import websocket
 import pandas as pd
-from threading import Thread
 
 # --- Database Setup ---
 # تأكد أن هذا الرابط صحيح ويشير إلى قاعدة بياناتك
 DATABASE_URL = "postgresql://bibokh_user:Ric9h1SaTADxdkV0LgNmF8c0RPWhWYzy@dpg-d30mrpogjchc73f1tiag-a.oregon-postgres.render.com/bibokh"
 engine = sa.create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
-Base = sa.declarative_base()
+# <<< تم استخدام declarative_base المستوردة هنا >>>
+Base = declarative_base()
+# <<< نهاية التصحيح >>>
 
 class User(Base):
     __tablename__ = 'users'
@@ -42,7 +46,11 @@ class BotSession(Base):
     contract_id = Column(String, nullable=True)
     logs = Column(String, default="[]")
 
-Base.metadata.create_all(engine)
+# Ensure tables are created when the app starts
+try:
+    Base.metadata.create_all(engine)
+except Exception as e:
+    print(f"Error creating database tables: {e}")
 
 # --- File-Based Authentication ---
 ALLOWED_EMAILS_FILE = 'user_ids.txt'
@@ -120,7 +128,7 @@ def update_bot_settings(session_id, new_settings):
     finally:
         s.close()
 
-# --- Trading Logic Functions ---
+# --- Trading Logic Functions (moved from trading_bot.py) ---
 def analyse_data(df_ticks):
     if len(df_ticks) < 60:
         return "Neutral", "Insufficient data"
@@ -310,9 +318,11 @@ if 'bot_thread' not in st.session_state:
     st.session_state.bot_thread = None
     
 def start_bot_thread(session_id):
-    st.session_state.bot_thread = Thread(target=main_trading_loop, args=(session_id,))
-    st.session_state.bot_thread.daemon = True
-    st.session_state.bot_thread.start()
+    # Only start a new thread if one isn't already running for this session
+    if st.session_state.bot_thread is None or not st.session_state.bot_thread.is_alive():
+        st.session_state.bot_thread = Thread(target=main_trading_loop, args=(session_id,))
+        st.session_state.bot_thread.daemon = True # Allows the main program to exit even if this thread is running
+        st.session_state.bot_thread.start()
 
 # --- Streamlit UI ---
 if 'logged_in' not in st.session_state:
@@ -346,25 +356,31 @@ else:
     current_status = "Running" if st.session_state.session_data.get('is_running') else "Stopped"
     is_session_active = st.session_state.session_data.get('api_token') is not None
     
+    # Load current values from session data if available
+    api_token_val = st.session_state.session_data.get('api_token', '')
+    base_amount_val = st.session_state.session_data.get('base_amount', 0.5)
+    tp_target_val = st.session_state.session_data.get('tp_target', 1.0)
+    max_losses_val = st.session_state.session_data.get('max_consecutive_losses', 5)
+    initial_balance_val = st.session_state.session_data.get('initial_balance')
+
     if not is_session_active or not current_status == "Running":
         st.warning("Please enter new settings to start a new session.")
-        api_token = st.text_input("Enter your Deriv API token:", type="password", value=st.session_state.session_data.get('api_token', ''))
-        base_amount = st.number_input("Base Amount ($)", min_value=0.5, step=0.5, value=st.session_state.session_data.get('base_amount', 0.5))
-        tp_target = st.number_input("Take Profit Target ($)", min_value=1.0, step=1.0, value=st.session_state.session_data.get('tp_target', 1.0))
-        max_losses = st.number_input("Max Consecutive Losses", min_value=1, step=1, value=st.session_state.session_data.get('max_consecutive_losses', 5))
+        api_token = st.text_input("Enter your Deriv API token:", type="password", value=api_token_val)
+        base_amount = st.number_input("Base Amount ($)", min_value=0.5, step=0.5, value=base_amount_val)
+        tp_target = st.number_input("Take Profit Target ($)", min_value=1.0, step=1.0, value=tp_target_val)
+        max_losses = st.number_input("Max Consecutive Losses", min_value=1, step=1, value=max_losses_val)
     else:
-        api_token = st.session_state.session_data.get('api_token')
-        base_amount = st.session_state.session_data.get('base_amount')
-        tp_target = st.session_state.session_data.get('tp_target')
-        max_losses = st.session_state.session_data.get('max_consecutive_losses')
-        initial_balance = st.session_state.session_data.get('initial_balance')
+        api_token = st.session_state.session_data.get('api_token') # Keep token hidden but available
+        base_amount = base_amount_val
+        tp_target = tp_target_val
+        max_losses = max_losses_val
         
-        st.write(f"**API Token:** {'********'}")
+        st.write(f"**API Token:** {'********'}") # Masked for security
         st.write(f"**Base Amount:** {base_amount}$")
         st.write(f"**TP Target:** {tp_target}$")
         st.write(f"**Max Losses:** {max_losses}")
-        if initial_balance:
-            st.write(f"**Initial Balance:** {initial_balance:.2f}$")
+        if initial_balance_val is not None:
+            st.write(f"**Initial Balance:** {initial_balance_val:.2f}$")
             
     col1, col2 = st.columns(2)
     with col1:
@@ -373,16 +389,21 @@ else:
         stop_button = st.button("Stop Bot", disabled=(current_status == 'Stopped'))
 
     if start_button:
-        new_settings = {
-            'is_running': True, 'api_token': api_token, 'base_amount': base_amount, 'tp_target': tp_target,
-            'max_consecutive_losses': max_losses, 'current_amount': base_amount, 'consecutive_losses': 0,
-            'total_wins': 0, 'total_losses': 0, 'initial_balance': None, 'contract_id': None,
-            'logs': json.dumps([f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot has been started."])
-        }
-        update_bot_settings(st.session_state.session_id, new_settings)
-        start_bot_thread(st.session_state.session_id)
-        st.success("Bot has been started.")
-        st.rerun()
+        # Ensure we have a valid token before proceeding
+        if not api_token:
+            st.error("Please enter your Deriv API token to start the bot.")
+        else:
+            new_settings = {
+                'is_running': True, 'api_token': api_token, 'base_amount': base_amount, 'tp_target': tp_target,
+                'max_consecutive_losses': max_losses, 'current_amount': base_amount, 'consecutive_losses': 0,
+                'total_wins': 0, 'total_losses': 0, 'initial_balance': None, 'contract_id': None,
+                'logs': json.dumps([f"[{datetime.now().strftime('%H:%M:%S')}] 🟢 Bot has been started."])
+            }
+            update_bot_settings(st.session_state.session_id, new_settings)
+            # Start the bot thread if it's not already running
+            start_bot_thread(st.session_state.session_id)
+            st.success("Bot has been started.")
+            st.rerun()
 
     if stop_button:
         logs = st.session_state.session_data.get('logs', [])
@@ -396,6 +417,9 @@ else:
     st.header("2. Live Bot Logs")
     logs = st.session_state.session_data.get('logs', [])
     with st.container(height=600):
+        # Use st.text_area for better log viewing and scrolling
         st.text_area("Logs", "\n".join(logs), height=600, key="logs_textarea")
+    
+    # Rerun to refresh logs every 5 seconds
     time.sleep(5)
     st.rerun()
