@@ -13,7 +13,10 @@ import pandas as pd
 DATABASE_URL = "postgresql://khourybotes_db_user:HeAQEQ68txKKjTVQkDva3yaMx3npqTuw@dpg-d2uvmvogjchc73ao6060-a/khourybotes_db"
 engine = sa.create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine)
-Base = sa.declarative_base()
+
+# Fix: declarative_base is now in sqlalchemy.orm
+from sqlalchemy.orm import declarative_base
+Base = declarative_base()
 
 class BotSession(Base):
     __tablename__ = 'bot_sessions'
@@ -82,6 +85,7 @@ def main_trading_loop(bot_session_id):
     try:
         ws = websocket.WebSocket()
         ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
+        
         while True:
             s = Session()
             try:
@@ -213,11 +217,13 @@ def main_trading_loop(bot_session_id):
             ws.close()
 
 if __name__ == "__main__":
+    # Check for active sessions when the bot starts
     s = Session()
     try:
         active_sessions = s.query(BotSession).filter_by(is_running=True).all()
         if not active_sessions:
             print("No active bots found. The bot will wait for new commands...")
+            # Keep the bot running to check for new commands periodically
             while True:
                 time.sleep(10) # Wait and check again
                 s_wait = Session()
@@ -226,8 +232,11 @@ if __name__ == "__main__":
                     if new_active_sessions:
                         print("Found new active bots. Starting them now.")
                         for session in new_active_sessions:
+                            # In a production scenario, you might want to manage these loops more robustly (e.g., using a thread pool or process pool)
+                            # For simplicity, we'll just call main_trading_loop which will run until it's stopped.
+                            # If multiple bots are started, they will run sequentially here. Consider threading if concurrent execution is needed.
                             main_trading_loop(session.session_id)
-                        break
+                        break # Exit the waiting loop once bots are started
                 finally:
                     s_wait.close()
         else:
