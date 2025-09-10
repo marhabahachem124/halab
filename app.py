@@ -160,7 +160,7 @@ if st.session_state.bot_running and not st.session_state.is_trade_open:
                             "contract_type": "CALL" if signal == 'Buy' else "PUT",
                             "currency": "USD",
                             "duration": 30, # Duration in ticks
-                            "duration_unit": "t", # Duration unit is ticks
+                            "duration_unit": "s", # Duration unit is ticks
                             "symbol": "R_100"
                         }
                         ws.send(json.dumps(proposal_req))
