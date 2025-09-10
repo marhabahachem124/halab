@@ -1,5 +1,6 @@
 import sqlalchemy as sa
-from sqlalchemy.orm import sessionmaker
+# تم تغيير هذا الاستيراد ليناسب SQLAlchemy 2.0+
+from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, ForeignKey
 from datetime import datetime
 import json
@@ -8,23 +9,29 @@ import time
 import os
 import websocket
 import pandas as pd
-from flask import Flask, request
+from flask import Flask
 from threading import Thread
-import logging # Added for better logging
-
-# --- Configure Logging ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Database Setup ---
+# تأكد من أن هذا الرابط صحيح
 DATABASE_URL = "postgresql://bibokh_user:Ric9h1SaTADxdkV0LgNmF8c0RPWhWYzy@dpg-d30mrpogjchc73f1tiag-a.oregon-postgres.render.com/bibokh"
 engine = sa.create_engine(DATABASE_URL)
+
+# هنا يتم إنشاء Base باستخدام الطريقة الحديثة
+Base = declarative_base() 
+
 Session = sessionmaker(bind=engine)
-Base = sa.declarative_base()
+
+# تعريف الجداول
+class User(Base): # هذا الجدول ليس مستخدمًا في trading_bot.py ولكنه قد يكون موجودًا في app.py
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    email = Column(String, unique=True, nullable=False)
 
 class BotSession(Base):
     __tablename__ = 'bot_sessions'
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False) # سيظل يعمل حتى لو لم يتم استخدامه هنا، كمرجع
     session_id = Column(String, unique=True, nullable=False, default=lambda: str(uuid.uuid4()))
     api_token = Column(String, nullable=True)
     base_amount = Column(Float, default=0.5)
@@ -61,8 +68,7 @@ def place_order(ws, proposal_id, amount):
         ws.send(json.dumps(req))
         response = json.loads(ws.recv())
         return response
-    except Exception as e:
-        logging.error(f"Error placing order: {e}")
+    except Exception:
         return {"error": {"message": "Order placement failed."}}
 
 def check_contract_status(ws, contract_id):
@@ -71,8 +77,7 @@ def check_contract_status(ws, contract_id):
         ws.send(json.dumps(req))
         response = ws.recv() 
         return json.loads(response)['proposal_open_contract']
-    except Exception as e:
-        logging.error(f"Error checking contract status: {e}")
+    except Exception:
         return None
 
 def get_balance(ws):
@@ -81,8 +86,7 @@ def get_balance(ws):
         ws.send(json.dumps(req))
         response = json.loads(ws.recv())
         return response.get('balance', {}).get('balance')
-    except Exception as e:
-        logging.error(f"Error getting balance: {e}")
+    except Exception:
         return None
 
 def main_trading_loop(bot_session_id):
@@ -91,13 +95,12 @@ def main_trading_loop(bot_session_id):
     try:
         ws = websocket.WebSocket()
         ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
-        
         while True:
             s = Session()
             try:
                 bot_session = s.query(BotSession).filter_by(session_id=bot_session_id).first()
                 if not bot_session or not bot_session.is_running:
-                    logging.info(f"Bot for session {bot_session_id} is stopped. Exiting loop.")
+                    print(f"Bot for session {bot_session_id} is stopped. Exiting loop.")
                     break
                 
                 state = {
@@ -214,7 +217,7 @@ def main_trading_loop(bot_session_id):
                     s.commit()
 
             except Exception as e:
-                logging.error(f"Error for session {bot_session_id}: {e}")
+                print(f"Error for session {bot_session_id}: {e}")
             finally:
                 s.close()
             time.sleep(1)
@@ -222,57 +225,65 @@ def main_trading_loop(bot_session_id):
         if ws:
             ws.close()
 
-# Flask app to keep the service running
+# Flask app to keep the service running and respond to pings
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    # This route is just to keep the server alive for Render's health checks
-    return "Trading Bot is Running and listening!"
+    return "Trading Bot is Running!"
 
-# Function to run the bot logic in a separate thread
-def run_trading_logic():
-    logging.info("Starting the main bot process in a separate thread.")
-    s = Session()
+# Function to initialize database tables if they don't exist
+def initialize_database():
     try:
-        # Ensure tables exist (important for first-time deploy)
         Base.metadata.create_all(engine)
-        logging.info("Database tables checked/created successfully.")
-        
-        while True:
-            active_sessions = s.query(BotSession).filter_by(is_running=True).all()
-            if not active_sessions:
-                logging.info("No active bots found. Waiting for commands...")
-                time.sleep(10) # Wait before checking again
-                continue
-            
-            for session in active_sessions:
-                logging.info(f"Starting bot for session: {session.session_id}")
-                main_trading_loop(session.session_id)
-            
-            time.sleep(10) # Small delay between checking active sessions
+        print("Database tables checked/created successfully.")
     except Exception as e:
-        logging.error(f"Error in bot logic thread: {e}")
+        print(f"Error initializing database: {e}")
+
+# Function to start the bot logic in a separate thread
+def start_trading_bot_thread():
+    print("Starting trading bot logic in a separate thread.")
+    try:
+        active_sessions = s.query(BotSession).filter_by(is_running=True).all()
+        if not active_sessions:
+            print("No active bots found initially. Waiting for commands...")
+            while True: # Keep checking for active bots
+                time.sleep(10)
+                s_wait = Session()
+                try:
+                    current_active_sessions = s_wait.query(BotSession).filter_by(is_running=True).all()
+                    if current_active_sessions:
+                        print("Found new active bots. Starting them now.")
+                        for session in current_active_sessions:
+                            main_trading_loop(session.session_id)
+                        # If we found active sessions, we can break this waiting loop if we only want to start once
+                        # or let it continue to monitor for changes. For now, let's assume we want it to restart if needed.
+                        break # Exit this waiting loop once we found active sessions
+                finally:
+                    s_wait.close()
+        else:
+            for session in active_sessions:
+                main_trading_loop(session.session_id)
+    except Exception as e:
+        print(f"Error in trading bot thread: {e}")
     finally:
         s.close()
 
-# Main entry point
-if __name__ == "__main__":
-    # Start the trading logic in a background thread
-    bot_thread = Thread(target=run_trading_logic, daemon=True)
+# Main function to start both the web server and the bot thread
+def run_app():
+    initialize_database() # Ensure tables are created before starting anything else
+
+    # Start the trading bot logic in a daemon thread so it runs in the background
+    bot_thread = Thread(target=start_trading_bot_thread)
+    bot_thread.daemon = True # Allows the main program to exit even if this thread is running
     bot_thread.start()
 
-    # Get the port from Render's environment variable
+    # Start the Flask web server to listen on the port provided by Render
     port = int(os.environ.get("PORT", 5000)) # Default to 5000 if PORT is not set
+    print(f"Starting Flask web server on port {port}")
+    app.run(host="0.0.0.0", port=port)
 
-    logging.info(f"Starting Flask web server on port {port} to keep the service alive.")
-    
-    # Run the Flask app
-    # Use a production-ready WSGI server like gunicorn (configured via Procfile)
-    # For local testing, you can run app.run(host="0.0.0.0", port=port)
-    # However, for Render, gunicorn is handled by the Procfile.
-    # This script will be executed by gunicorn.
-    
-    # The Flask app object itself is what gunicorn will run.
-    # The run_trading_logic thread will start automatically when the script is executed.
-    pass # The actual Flask app runs via gunicorn as defined in Procfile
+if __name__ == "__main__":
+    # Need to create a session for the initial query in start_trading_bot_thread
+    s = Session() 
+    run_app()
