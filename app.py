@@ -24,18 +24,13 @@ def analyse_data(df_ticks):
     
     last_5_ticks = df_ticks.tail(5).copy()
     
-    # Check for direction of all 5 ticks
     open_5_ticks = last_5_ticks['price'].iloc[0]
     close_5_ticks = last_5_ticks['price'].iloc[-1]
     
-    # Check for a BUY signal (Upward trend)
     if close_5_ticks > open_5_ticks:
         return "Buy", None
-    
-    # Check for a SELL signal (Downward trend)
     elif close_5_ticks < open_5_ticks:
         return "Sell", None
-    
     else:
         return "Neutral", "No clear signal."
 
@@ -149,7 +144,6 @@ state = st.session_state
 # --- Main Bot Logic Loop ---
 if state.bot_running:
     try:
-        # Get and display balance
         ws = websocket.WebSocket()
         ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
         auth_req = {"authorize": state.user_token}
@@ -167,14 +161,12 @@ if state.bot_running:
                     state.initial_balance = balance
                     state.current_balance = balance
             
-            # Update UI
             wins_losses_placeholder.write(f"**Wins:** {state.total_wins} | **Losses:** {state.total_losses}")
             if state.current_balance is not None:
                 balance_placeholder.metric("Current Balance", f"{state.current_balance:.2f}$", 
                                           delta=round(state.current_balance - state.initial_balance, 2), 
                                           delta_color="normal")
             
-            # Trading Logic
             if not state.is_trade_open:
                 now = datetime.now()
                 seconds_to_wait = 60 - now.second
@@ -192,8 +184,10 @@ if state.bot_running:
                         signal, error_msg = analyse_data(df_ticks)
                         
                         if signal in ['Buy', 'Sell']:
-                            contract_type = "CALL" if signal == 'Buy' else "PUT"
-                            
+                            # --- MODIFIED PART: Invert the signal ---
+                            contract_type = "PUT" if signal == 'Buy' else "CALL"
+                            # --- END OF MODIFIED PART ---
+
                             proposal_req = {
                                 "proposal": 1,
                                 "amount": round(st.session_state.current_amount, 2),
@@ -220,7 +214,8 @@ if state.bot_running:
             elif state.is_trade_open:
                 status_placeholder.info(f"**Bot Status:** Waiting for trade result...")
                 timer_placeholder.empty()
-                if (datetime.now() - state.trade_start_time).total_seconds() >= 10:
+                # Wait for a bit longer than the trade duration to ensure it resolves
+                if (datetime.now() - state.trade_start_time).total_seconds() >= 10: 
                     contract_info = check_contract_status(ws, state.contract_id)
                     if contract_info and contract_info.get('is_sold'):
                         profit = contract_info.get('profit', 0)
