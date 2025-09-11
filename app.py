@@ -19,25 +19,25 @@ def get_balance(ws):
         return None
 
 def analyse_data(df_ticks):
-    if len(df_ticks) < 60:
-        return "Neutral", "Insufficient data: Less than 60 ticks available."
+    if len(df_ticks) < 5:
+        return "Neutral", "Insufficient data: Less than 5 ticks available."
     
-    last_60_ticks = df_ticks.tail(60).copy()
+    last_5_ticks = df_ticks.tail(5).copy()
     
-    # Check for direction of all 60 ticks
-    open_60_ticks = last_60_ticks['price'].iloc[0]
-    close_60_ticks = last_60_ticks['price'].iloc[-1]
+    # Check for direction of all 5 ticks
+    open_5_ticks = last_5_ticks['price'].iloc[0]
+    close_5_ticks = last_5_ticks['price'].iloc[-1]
     
     # Check for a BUY signal (Upward trend)
-    if close_60_ticks > open_60_ticks:
+    if close_5_ticks > open_5_ticks:
         return "Buy", None
     
     # Check for a SELL signal (Downward trend)
-    elif close_60_ticks < open_60_ticks:
+    elif close_5_ticks < open_5_ticks:
         return "Sell", None
     
     else:
-        return "Neutral", "No clear combined signal based on all conditions."
+        return "Neutral", "No clear signal."
 
 def place_order(ws, proposal_id, amount):
     req = {"buy": proposal_id, "price": round(max(0.5, amount), 2)}
@@ -177,14 +177,12 @@ if state.bot_running:
             # Trading Logic
             if not state.is_trade_open:
                 now = datetime.now()
-                # --- MODIFIED PART: Wait for 2 seconds before the minute ends ---
                 seconds_to_wait = 60 - now.second
                 status_placeholder.info(f"**Bot Status:** Analysing... Waiting for the next minute")
                 timer_placeholder.metric("Time until next analysis", f"{seconds_to_wait}s")
                 
                 if seconds_to_wait <= 2:
-                    # --- MODIFIED PART: Analyse last 60 ticks ---
-                    req = {"ticks_history": "R_100", "end": "latest", "count": 60, "style": "ticks"}
+                    req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
                     ws.send(json.dumps(req))
                     tick_data = json.loads(ws.recv())
                     
@@ -194,7 +192,6 @@ if state.bot_running:
                         signal, error_msg = analyse_data(df_ticks)
                         
                         if signal in ['Buy', 'Sell']:
-                            # --- MODIFIED PART: Direct signal correlation ---
                             contract_type = "CALL" if signal == 'Buy' else "PUT"
                             
                             proposal_req = {
@@ -203,8 +200,7 @@ if state.bot_running:
                                 "basis": "stake",
                                 "contract_type": contract_type,
                                 "currency": "USD",
-                                # --- MODIFIED PART: Trade duration is 10 ticks ---
-                                "duration": 10,  
+                                "duration": 5,  
                                 "duration_unit": "t",
                                 "symbol": "R_100"
                             }
@@ -224,8 +220,7 @@ if state.bot_running:
             elif state.is_trade_open:
                 status_placeholder.info(f"**Bot Status:** Waiting for trade result...")
                 timer_placeholder.empty()
-                # Wait for 15 seconds to check the contract status to be safe, since a 10 tick trade is very short
-                if (datetime.now() - state.trade_start_time).total_seconds() >= 15:
+                if (datetime.now() - state.trade_start_time).total_seconds() >= 10:
                     contract_info = check_contract_status(ws, state.contract_id)
                     if contract_info and contract_info.get('is_sold'):
                         profit = contract_info.get('profit', 0)
