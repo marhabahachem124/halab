@@ -19,36 +19,31 @@ def get_balance(ws):
         return None
 
 def analyse_data(df_ticks):
-    if len(df_ticks) < 60:
-        return "Neutral", "Insufficient data: Less than 60 ticks available."
+    if len(df_ticks) < 90:
+        return "Neutral", "Insufficient data: Less than 90 ticks available."
     
-    last_60_ticks = df_ticks.tail(60).copy()
-    first_30 = last_60_ticks.iloc[:30]
-    last_30 = last_60_ticks.iloc[30:]
+    last_90_ticks = df_ticks.tail(90).copy()
+    first_30 = last_90_ticks.iloc[:30]
+    middle_30 = last_90_ticks.iloc[30:60]
+    last_30 = last_90_ticks.iloc[60:]
     
-    # Condition 1: Check for different average directions
-    open_first_30 = first_30['price'].iloc[0]
-    close_first_30 = first_30['price'].iloc[-1]
+    # Check for direction of each 30-tick segment
+    is_first_30_up = first_30['price'].iloc[-1] > first_30['price'].iloc[0]
+    is_middle_30_up = middle_30['price'].iloc[-1] > middle_30['price'].iloc[0]
+    is_last_30_up = last_30['price'].iloc[-1] > last_30['price'].iloc[0]
     
-    open_last_30 = last_30['price'].iloc[0]
-    close_last_30 = last_30['price'].iloc[-1]
-    
-    # Condition 2: Unified direction for all 60 ticks
-    open_60_ticks = last_60_ticks['price'].iloc[0]
-    close_60_ticks = last_60_ticks['price'].iloc[-1]
-    
-    # Check for a BUY signal
+    # Check for a BUY signal (Down-Up-Down)
     buy_signal_conditions = (
-        (open_first_30 > close_first_30) and      # First 30 ticks are bearish (down)
-        (open_last_30 < close_last_30) and        # Last 30 ticks are bullish (up)
-        (open_60_ticks < close_60_ticks)          # Overall 60 ticks are bullish (up)
+        not is_first_30_up and   # First 30 ticks are bearish (down)
+        is_middle_30_up and      # Middle 30 ticks are bullish (up)
+        not is_last_30_up        # Last 30 ticks are bearish (down)
     )
     
-    # Check for a SELL signal
+    # Check for a SELL signal (Up-Down-Up)
     sell_signal_conditions = (
-        (open_first_30 < close_first_30) and      # First 30 ticks are bullish (up)
-        (open_last_30 > close_last_30) and        # Last 30 ticks are bearish (down)
-        (open_60_ticks > close_60_ticks)          # Overall 60 ticks are bearish (down)
+        is_first_30_up and      # First 30 ticks are bullish (up)
+        not is_middle_30_up and # Middle 30 ticks are bearish (down)
+        is_last_30_up           # Last 30 ticks are bullish (up)
     )
 
     if buy_signal_conditions:
@@ -201,7 +196,7 @@ if state.bot_running:
                 timer_placeholder.metric("Time until next analysis", f"{seconds_to_wait}s")
                 
                 if seconds_to_wait <= 5:
-                    req = {"ticks_history": "R_100", "end": "latest", "count": 60, "style": "ticks"}
+                    req = {"ticks_history": "R_100", "end": "latest", "count": 90, "style": "ticks"}
                     ws.send(json.dumps(req))
                     tick_data = json.loads(ws.recv())
                     
@@ -211,10 +206,9 @@ if state.bot_running:
                         signal, error_msg = analyse_data(df_ticks)
                         
                         if signal in ['Buy', 'Sell']:
-                            # --- MODIFIED PART ---
-                            # Invert the signal: if the signal is 'Buy', enter a 'PUT' (Sell) contract
-                            # if the signal is 'Sell', enter a 'CALL' (Buy) contract
-                            contract_type = "PUT" if signal == 'Buy' else "CALL"
+                            # --- MODIFIED PART to INVERT signals ---
+                            contract_type = "CALL" if signal == 'Buy' else "PUT"
+                            # --- END OF MODIFIED PART ---
 
                             proposal_req = {
                                 "proposal": 1,
@@ -222,11 +216,10 @@ if state.bot_running:
                                 "basis": "stake",
                                 "contract_type": contract_type,
                                 "currency": "USD",
-                                "duration": 5,  
-                                "duration_unit": "t",
+                                "duration": 30,  
+                                "duration_unit": "s",
                                 "symbol": "R_100"
                             }
-                            # --- END OF MODIFIED PART ---
                             
                             ws.send(json.dumps(proposal_req))
                             proposal_response = json.loads(ws.recv())
@@ -267,10 +260,10 @@ if state.bot_running:
                             state.current_balance = current_balance
                             if state.tp_target and (current_balance - state.initial_balance) >= state.tp_target:
                                 state.bot_running = False
-                                st.rerun() # Trigger a rerun to stop the bot
+                                st.rerun()
                             if state.consecutive_losses >= state.max_consecutive_losses:
                                 state.bot_running = False
-                                st.rerun() # Trigger a rerun to stop the bot
+                                st.rerun()
     except Exception as e:
         status_placeholder.error(f"❌ Connection lost. Reconnecting... Error: {e}")
         time.sleep(5)
