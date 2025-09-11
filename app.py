@@ -236,8 +236,8 @@ while state.bot_running:
                             "basis": "stake",
                             "contract_type": "CALL" if signal == 'Buy' else "PUT",
                             "currency": "USD",
-                            "duration": 30,  
-                            "duration_unit": "s",
+                            "duration": 5,  
+                            "duration_unit": "t",
                             "symbol": "R_100"
                         }
                         ws.send(json.dumps(proposal_req))
