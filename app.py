@@ -19,37 +19,23 @@ def get_balance(ws):
         return None
 
 def analyse_data(df_ticks):
-    if len(df_ticks) < 90:
-        return "Neutral", "Insufficient data: Less than 90 ticks available."
+    if len(df_ticks) < 60:
+        return "Neutral", "Insufficient data: Less than 60 ticks available."
     
-    last_90_ticks = df_ticks.tail(90).copy()
-    first_30 = last_90_ticks.iloc[:30]
-    middle_30 = last_90_ticks.iloc[30:60]
-    last_30 = last_90_ticks.iloc[60:]
+    last_60_ticks = df_ticks.tail(60).copy()
     
-    # Check for direction of each 30-tick segment
-    is_first_30_up = first_30['price'].iloc[-1] > first_30['price'].iloc[0]
-    is_middle_30_up = middle_30['price'].iloc[-1] > middle_30['price'].iloc[0]
-    is_last_30_up = last_30['price'].iloc[-1] > last_30['price'].iloc[0]
+    # Check for direction of all 60 ticks
+    open_60_ticks = last_60_ticks['price'].iloc[0]
+    close_60_ticks = last_60_ticks['price'].iloc[-1]
     
-    # Check for a BUY signal (Down-Up-Down)
-    buy_signal_conditions = (
-        not is_first_30_up and   # First 30 ticks are bearish (down)
-        is_middle_30_up and      # Middle 30 ticks are bullish (up)
-        not is_last_30_up        # Last 30 ticks are bearish (down)
-    )
-    
-    # Check for a SELL signal (Up-Down-Up)
-    sell_signal_conditions = (
-        is_first_30_up and      # First 30 ticks are bullish (up)
-        not is_middle_30_up and # Middle 30 ticks are bearish (down)
-        is_last_30_up           # Last 30 ticks are bullish (up)
-    )
-
-    if buy_signal_conditions:
+    # Check for a BUY signal (Upward trend)
+    if close_60_ticks > open_60_ticks:
         return "Buy", None
-    elif sell_signal_conditions:
+    
+    # Check for a SELL signal (Downward trend)
+    elif close_60_ticks < open_60_ticks:
         return "Sell", None
+    
     else:
         return "Neutral", "No clear combined signal based on all conditions."
 
@@ -191,12 +177,14 @@ if state.bot_running:
             # Trading Logic
             if not state.is_trade_open:
                 now = datetime.now()
+                # --- MODIFIED PART: Wait for 2 seconds before the minute ends ---
                 seconds_to_wait = 60 - now.second
                 status_placeholder.info(f"**Bot Status:** Analysing... Waiting for the next minute")
                 timer_placeholder.metric("Time until next analysis", f"{seconds_to_wait}s")
                 
-                if seconds_to_wait <= 5:
-                    req = {"ticks_history": "R_100", "end": "latest", "count": 90, "style": "ticks"}
+                if seconds_to_wait <= 2:
+                    # --- MODIFIED PART: Analyse last 60 ticks ---
+                    req = {"ticks_history": "R_100", "end": "latest", "count": 60, "style": "ticks"}
                     ws.send(json.dumps(req))
                     tick_data = json.loads(ws.recv())
                     
@@ -206,18 +194,18 @@ if state.bot_running:
                         signal, error_msg = analyse_data(df_ticks)
                         
                         if signal in ['Buy', 'Sell']:
-                            # --- MODIFIED PART to INVERT signals ---
+                            # --- MODIFIED PART: Direct signal correlation ---
                             contract_type = "CALL" if signal == 'Buy' else "PUT"
-                            # --- END OF MODIFIED PART ---
-
+                            
                             proposal_req = {
                                 "proposal": 1,
                                 "amount": round(st.session_state.current_amount, 2),
                                 "basis": "stake",
                                 "contract_type": contract_type,
                                 "currency": "USD",
-                                "duration": 30,  
-                                "duration_unit": "s",
+                                # --- MODIFIED PART: Trade duration is 10 ticks ---
+                                "duration": 10,  
+                                "duration_unit": "t",
                                 "symbol": "R_100"
                             }
                             
@@ -236,7 +224,8 @@ if state.bot_running:
             elif state.is_trade_open:
                 status_placeholder.info(f"**Bot Status:** Waiting for trade result...")
                 timer_placeholder.empty()
-                if (datetime.now() - state.trade_start_time).total_seconds() >= 40:
+                # Wait for 15 seconds to check the contract status to be safe, since a 10 tick trade is very short
+                if (datetime.now() - state.trade_start_time).total_seconds() >= 15:
                     contract_info = check_contract_status(ws, state.contract_id)
                     if contract_info and contract_info.get('is_sold'):
                         profit = contract_info.get('profit', 0)
