@@ -157,7 +157,7 @@ with st.expander("Bot Settings", expanded=True):
 st.markdown("---")
 st.header("Live Bot Status")
 
-# --- Display dynamic status ---
+# --- Display dynamic status placeholders ---
 status_placeholder = st.empty()
 wins_losses_placeholder = st.empty()
 balance_placeholder = st.empty()
@@ -165,144 +165,116 @@ timer_placeholder = st.empty()
 
 state = st.session_state
 
-# --- Main Bot Loop ---
-while state.bot_running:
+# --- Main Bot Logic Loop ---
+if state.bot_running:
     try:
-        # --- Get and display balance immediately if token is present ---
-        if state.user_token and state.balance_check_needed:
-            ws = websocket.WebSocket()
-            ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
-            auth_req = {"authorize": state.user_token}
-            ws.send(json.dumps(auth_req))
-            auth_response = json.loads(ws.recv())
-            if auth_response.get('error'):
-                state.bot_running = False
-            else:
-                balance = get_balance(ws)
-                if balance is not None:
-                    state.initial_balance = balance
-                    state.current_balance = balance
-                    state.balance_check_needed = False
-                else:
-                    pass
-            ws.close()
-        
-        # --- Update UI based on current state ---
-        if state.current_balance is not None:
-            balance_placeholder.metric("Current Balance", f"{state.current_balance:.2f}$", 
-                                      delta=round(state.current_balance - state.initial_balance, 2), 
-                                      delta_color="normal")
-        else:
-            balance_placeholder.info("Fetching balance...")
-            st.rerun()
-
-        wins_losses_placeholder.write(f"**Wins:** {state.total_wins} | **Losses:** {state.total_losses}")
-        
-        # --- Main Trading Logic ---
+        # Get and display balance
         ws = websocket.WebSocket()
         ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
         auth_req = {"authorize": state.user_token}
         ws.send(json.dumps(auth_req))
         auth_response = json.loads(ws.recv())
+
         if auth_response.get('error'):
+            status_placeholder.error(f"❌ Auth failed: {auth_response['error']['message']}")
             state.bot_running = False
             st.rerun()
-
-        if not state.is_trade_open:
-            now = datetime.now()
-            seconds_to_wait = 60 - now.second
-            status_placeholder.info(f"**Bot Status:** Analysing... Waiting for the next minute")
-            timer_placeholder.metric("Time until next analysis", f"{seconds_to_wait}s")
+        else:
+            if state.initial_balance is None:
+                balance = get_balance(ws)
+                if balance is not None:
+                    state.initial_balance = balance
+                    state.current_balance = balance
             
-            if now.second >= 55:
-                req = {"ticks_history": "R_100", "end": "latest", "count": 60, "style": "ticks"}
-                ws.send(json.dumps(req))
-                tick_data = json.loads(ws.recv())
+            # Update UI
+            wins_losses_placeholder.write(f"**Wins:** {state.total_wins} | **Losses:** {state.total_losses}")
+            if state.current_balance is not None:
+                balance_placeholder.metric("Current Balance", f"{state.current_balance:.2f}$", 
+                                          delta=round(state.current_balance - state.initial_balance, 2), 
+                                          delta_color="normal")
+            
+            # Trading Logic
+            if not state.is_trade_open:
+                now = datetime.now()
+                seconds_to_wait = 60 - now.second
+                status_placeholder.info(f"**Bot Status:** Analysing... Waiting for the next minute")
+                timer_placeholder.metric("Time until next analysis", f"{seconds_to_wait}s")
                 
-                if 'history' in tick_data and tick_data['history']['prices']:
-                    ticks = tick_data['history']['prices']
-                    df_ticks = pd.DataFrame({'price': ticks})
+                if seconds_to_wait <= 5:
+                    req = {"ticks_history": "R_100", "end": "latest", "count": 60, "style": "ticks"}
+                    ws.send(json.dumps(req))
+                    tick_data = json.loads(ws.recv())
                     
-                    signal, error_msg = analyse_data(df_ticks)
-                    
-                    if error_msg:
-                        pass
-                    
-                    if signal in ['Buy', 'Sell']:
+                    if 'history' in tick_data and tick_data['history']['prices']:
+                        ticks = tick_data['history']['prices']
+                        df_ticks = pd.DataFrame({'price': ticks})
+                        signal, error_msg = analyse_data(df_ticks)
                         
-                        proposal_req = {
-                            "proposal": 1,
-                            "amount": round(st.session_state.current_amount, 2),
-                            "basis": "stake",
-                            "contract_type": "CALL" if signal == 'Buy' else "PUT",
-                            "currency": "USD",
-                            "duration": 5,  
-                            "duration_unit": "t",
-                            "symbol": "R_100"
-                        }
-                        ws.send(json.dumps(proposal_req))
-                        proposal_response = json.loads(ws.recv())
-                        
-                        if 'proposal' in proposal_response:
-                            proposal_id = proposal_response['proposal']['id']
-                            order_response = place_order(ws, proposal_id, st.session_state.current_amount)
+                        if signal in ['Buy', 'Sell']:
+                            # --- MODIFIED PART ---
+                            # Invert the signal: if the signal is 'Buy', enter a 'PUT' (Sell) contract
+                            # if the signal is 'Sell', enter a 'CALL' (Buy) contract
+                            contract_type = "PUT" if signal == 'Buy' else "CALL"
+
+                            proposal_req = {
+                                "proposal": 1,
+                                "amount": round(st.session_state.current_amount, 2),
+                                "basis": "stake",
+                                "contract_type": contract_type,
+                                "currency": "USD",
+                                "duration": 5,  
+                                "duration_unit": "t",
+                                "symbol": "R_100"
+                            }
+                            # --- END OF MODIFIED PART ---
                             
-                            if 'buy' in order_response and 'contract_id' in order_response['buy']:
-                                st.session_state.is_trade_open = True
-                                st.session_state.trade_start_time = datetime.now()
-                                st.session_state.contract_id = order_response['buy']['contract_id']
-                            elif 'error' in order_response:
-                                pass
-                            else:
-                                pass
+                            ws.send(json.dumps(proposal_req))
+                            proposal_response = json.loads(ws.recv())
+                            
+                            if 'proposal' in proposal_response:
+                                proposal_id = proposal_response['proposal']['id']
+                                order_response = place_order(ws, proposal_id, st.session_state.current_amount)
+                                
+                                if 'buy' in order_response and 'contract_id' in order_response['buy']:
+                                    st.session_state.is_trade_open = True
+                                    st.session_state.trade_start_time = datetime.now()
+                                    st.session_state.contract_id = order_response['buy']['contract_id']
+            
+            elif state.is_trade_open:
+                status_placeholder.info(f"**Bot Status:** Waiting for trade result...")
+                timer_placeholder.empty()
+                if (datetime.now() - state.trade_start_time).total_seconds() >= 40:
+                    contract_info = check_contract_status(ws, state.contract_id)
+                    if contract_info and contract_info.get('is_sold'):
+                        profit = contract_info.get('profit', 0)
+                        
+                        if profit > 0:
+                            state.consecutive_losses = 0
+                            state.total_wins += 1
+                            state.current_amount = state.base_amount
+                        elif profit < 0:
+                            state.consecutive_losses += 1
+                            state.total_losses += 1
+                            next_bet = state.current_amount * 2.2
+                            state.current_amount = max(state.base_amount, next_bet)
                         else:
                             pass
-                    else:
-                        pass
-
-                else:
-                    pass
-        
-        elif state.is_trade_open:
-            status_placeholder.info(f"**Bot Status:** Waiting for trade result...")
-            if (datetime.now() - state.trade_start_time).total_seconds() >= 40:
-                contract_info = check_contract_status(ws, state.contract_id)
-                if contract_info and contract_info.get('is_sold'):
-                    profit = contract_info.get('profit', 0)
-                    
-                    if profit > 0:
-                        state.consecutive_losses = 0
-                        state.total_wins += 1
-                        state.current_amount = state.base_amount
-                    elif profit < 0:
-                        state.consecutive_losses += 1
-                        state.total_losses += 1
-                        next_bet = state.current_amount * 2.2
-                        state.current_amount = max(state.base_amount, next_bet)
-                    else:
-                        pass
+                            
+                        state.is_trade_open = False
                         
-                    state.is_trade_open = False
-                    
-                    current_balance = get_balance(ws)
-                    if current_balance is not None:
-                        state.current_balance = current_balance
-                        
-                        if state.tp_target and (current_balance - state.initial_balance) >= state.tp_target:
-                            state.bot_running = False
-                    else:
-                        pass
-                        
-                    if state.consecutive_losses >= state.max_consecutive_losses:
-                        state.bot_running = False
-                elif contract_info and not contract_info.get('is_sold'):
-                    pass
-                else:
-                    pass
-        
+                        current_balance = get_balance(ws)
+                        if current_balance is not None:
+                            state.current_balance = current_balance
+                            if state.tp_target and (current_balance - state.initial_balance) >= state.tp_target:
+                                state.bot_running = False
+                                st.rerun() # Trigger a rerun to stop the bot
+                            if state.consecutive_losses >= state.max_consecutive_losses:
+                                state.bot_running = False
+                                st.rerun() # Trigger a rerun to stop the bot
     except Exception as e:
-        status_placeholder.error(f"❌ Connection lost. Reconnecting...")
-        time.sleep(5) # Wait for 5 seconds before retrying to connect
+        status_placeholder.error(f"❌ Connection lost. Reconnecting... Error: {e}")
+        time.sleep(5)
+        st.rerun()
     finally:
         if 'ws' in locals() and ws.connected:
             ws.close()
