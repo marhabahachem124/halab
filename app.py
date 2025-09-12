@@ -19,27 +19,25 @@ def get_balance(ws):
         return None
 
 def analyse_data(df_ticks):
-    # --- MODIFIED: Analyse the last 15 ticks ---
-    if len(df_ticks) < 15:
-        return "Neutral", "Insufficient data: Less than 15 ticks available."
+    if len(df_ticks) < 5:
+        return "Neutral", "Insufficient data: Less than 5 ticks available."
     
-    last_15_ticks = df_ticks.tail(15).copy()
+    last_5_ticks = df_ticks.tail(5).copy()
     
-    # --- MODIFIED: Strong Momentum Strategy Logic ---
-    # Calculate price changes between consecutive ticks
-    price_changes = last_15_ticks['price'].diff().dropna()
+    # Check for direction based on first vs last tick (Trend Strategy)
+    open_5_ticks = last_5_ticks['price'].iloc[0]
+    close_5_ticks = last_5_ticks['price'].iloc[-1]
     
-    # If all price changes are positive and significant (strong upward momentum)
-    # We can set a threshold for 'significant' movement if needed, for now, we check for consistent positive movement
-    if price_changes.sum() > 0 and (price_changes > 0).all():
-        return "Buy", "Strong upward momentum detected."
+    # Check for a BUY signal (Upward trend)
+    if close_5_ticks > open_5_ticks:
+        return "Buy", None
     
-    # If all price changes are negative and significant (strong downward momentum)
-    elif price_changes.sum() < 0 and (price_changes < 0).all():
-        return "Sell", "Strong downward momentum detected."
+    # Check for a SELL signal (Downward trend)
+    elif close_5_ticks < open_5_ticks:
+        return "Sell", None
     
     else:
-        return "Neutral", "No clear strong momentum detected."
+        return "Neutral", "No clear signal."
 
 def place_order(ws, proposal_id, amount):
     req = {"buy": proposal_id, "price": round(max(0.5, amount), 2)}
@@ -184,13 +182,12 @@ if state.bot_running:
             # Trading Logic
             if not state.is_trade_open:
                 now = datetime.now()
-                # Timer until next analysis minute starts (approximate)
                 seconds_to_wait = 60 - now.second
                 status_placeholder.info(f"**Bot Status:** Analysing... Waiting for the next minute")
                 timer_placeholder.metric("Time until next analysis", f"{seconds_to_wait}s")
                 
-                if seconds_to_wait <= 2: # Trigger analysis near the start of a new minute
-                    req = {"ticks_history": "R_100", "end": "latest", "count": 15, "style": "ticks"} # MODIFIED: Fetch 15 ticks
+                if seconds_to_wait <= 2:
+                    req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
                     ws.send(json.dumps(req))
                     tick_data = json.loads(ws.recv())
                     
@@ -200,7 +197,6 @@ if state.bot_running:
                         signal, error_msg = analyse_data(df_ticks)
                         
                         if signal in ['Buy', 'Sell']:
-                            # Original logic: Follow the trend
                             contract_type = "CALL" if signal == 'Buy' else "PUT"
                             
                             proposal_req = {
@@ -209,12 +205,12 @@ if state.bot_running:
                                 "basis": "stake",
                                 "contract_type": contract_type,
                                 "currency": state.account_currency,
-                                "duration": 15,  # MODIFIED: Duration in ticks
-                                "duration_unit": "t",  # MODIFIED: Duration unit is ticks
+                                "duration": 15,
+                                "duration_unit": "s",
                                 "symbol": "R_100"
                             }
                             
-                            ws.send(json.json.dumps(proposal_req))
+                            ws.send(json.dumps(proposal_req))
                             proposal_response = json.loads(ws.recv())
                             
                             if 'proposal' in proposal_response:
@@ -229,8 +225,7 @@ if state.bot_running:
             elif state.is_trade_open:
                 status_placeholder.info(f"**Bot Status:** Waiting for trade result...")
                 timer_placeholder.empty()
-                # MODIFIED: Wait enough time for a 15-tick contract (approx 15 secs) + buffer
-                if (datetime.now() - state.trade_start_time).total_seconds() >= 20: 
+                if (datetime.now() - state.trade_start_time).total_seconds() >= 20:
                     contract_info = check_contract_status(ws, state.contract_id)
                     if contract_info and contract_info.get('is_sold'):
                         profit = contract_info.get('profit', 0)
