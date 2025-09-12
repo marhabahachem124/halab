@@ -30,11 +30,11 @@ def analyse_data(df_ticks):
     
     # Check for a BUY signal (Upward trend)
     if close_5_ticks > open_5_ticks:
-        return "Sell", None
+        return "Buy", None
     
     # Check for a SELL signal (Downward trend)
     elif close_5_ticks < open_5_ticks:
-        return "Buy", None
+        return "Sell", None
     
     else:
         return "Neutral", "No clear signal."
@@ -209,8 +209,8 @@ if state.bot_running:
                                 # --- MODIFIED PART: Use dynamic currency ---
                                 "currency": state.account_currency,
                                 # --- END OF MODIFIED PART ---
-                                "duration": 5,  
-                                "duration_unit": "t",
+                                "duration": 30,  
+                                "duration_unit": "s",
                                 "symbol": "R_100"
                             }
                             
@@ -229,7 +229,7 @@ if state.bot_running:
             elif state.is_trade_open:
                 status_placeholder.info(f"**Bot Status:** Waiting for trade result...")
                 timer_placeholder.empty()
-                if (datetime.now() - state.trade_start_time).total_seconds() >= 10:
+                if (datetime.now() - state.trade_start_time).total_seconds() >= 40:
                     contract_info = check_contract_status(ws, state.contract_id)
                     if contract_info and contract_info.get('is_sold'):
                         profit = contract_info.get('profit', 0)
