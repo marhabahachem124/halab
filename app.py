@@ -6,14 +6,14 @@ from datetime import datetime
 import psycopg2
 import os
 import sys
-from flask import Flask, render_template_string, request, redirect, url_for
+from flask import Flask, render_template_string, request, redirect, url_for, session
 
 app = Flask(__name__)
-# لم نعد بحاجة إلى secret_key إلا إذا أردنا استخدام وظائف Flask الخاصة بالجلسات
-# app.secret_key = 'your_super_secret_key' 
+app.secret_key = 'your_super_secret_key'  # قم بتغيير هذا إلى مفتاح سري خاص بك
 
 # --- Database Connection Details ---
-DB_URI = "postgresql://bestan_user:gTJKgsCRwEu9ijNMD9d3IMxFcW5TAdE0@dpg-d329ao2dbo4c73a92kng-a.oregon-postgres.render.com/bestan" 
+# قم باستبدال هذا الرابط برابط الاتصال الخاص بك
+DB_URI = "postgresql://user:password@host:port/dbname" 
 
 # --- HTML Templates as Strings ---
 LOGIN_HTML = """
@@ -103,8 +103,6 @@ STATS_HTML = """
         li { background-color: #f9f9f9; padding: 12px; margin-bottom: 8px; border-radius: 5px; border-left: 5px solid #007bff; }
         .profit { color: #28a745; font-weight: bold; }
         .loss { color: #dc3545; font-weight: bold; }
-        a { color: #007bff; text-decoration: none; }
-        a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -115,24 +113,48 @@ STATS_HTML = """
             <li>Total Wins: {{ stats['total_wins'] }}</li>
             <li>Total Losses: {{ stats['total_losses'] }}</li>
             <li>Consecutive Losses: {{ stats['consecutive_losses'] }}</li>
-            <li>Current Martingale Amount: ${{ "%.2f"|format(stats['current_amount']) }}</li>
-            <li>Initial Balance: ${{ "%.2f"|format(stats['initial_balance']) }}</li>
+            <li>Current Martingale Amount: ${{ stats['current_amount'] }}</li>
+            <li>Initial Balance: ${{ stats['initial_balance'] }}</li>
         </ul>
         <p>Current P/L: <span class="{{ 'profit' if profit > 0 else 'loss' }}">${{ "%.2f"|format(profit) }}</span></p>
-        <p><a href="{{ url_for('logout') }}">Logout and Stop Bot</a></p>
     </div>
 </body>
 </html>
 """
 
-# --- Database Functions (Same as before) ---
+# --- Database Functions ---
 def get_db_connection():
     try:
-        conn = psycopg2.connect(DB_URI)
-        return conn
+        return psycopg2.connect(DB_URI)
     except Exception as e:
-        print(f"❌ Failed to connect to the database: {e}")
         return None
+
+def create_table_if_not_exists():
+    conn = get_db_connection()
+    if conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS user_settings (
+                        email VARCHAR(255) PRIMARY KEY,
+                        user_token VARCHAR(255),
+                        base_amount NUMERIC(10, 2),
+                        tp_target NUMERIC(10, 2),
+                        max_consecutive_losses INTEGER,
+                        total_wins INTEGER,
+                        total_losses INTEGER,
+                        current_amount NUMERIC(10, 2),
+                        consecutive_losses INTEGER,
+                        initial_balance NUMERIC(10, 2)
+                    );
+                """)
+                conn.commit()
+                print("✅ Table 'user_settings' created successfully or already exists.")
+            except Exception as e:
+                print(f"❌ Error creating table: {e}")
+            finally:
+                if conn:
+                    conn.close()
 
 def load_settings_from_db(email):
     conn = get_db_connection()
@@ -140,7 +162,6 @@ def load_settings_from_db(email):
         with conn.cursor() as cur:
             cur.execute("SELECT user_token, base_amount, tp_target, max_consecutive_losses FROM user_settings WHERE email = %s", (email,))
             result = cur.fetchone()
-            cur.close()
             conn.close()
             if result:
                 return {
@@ -157,7 +178,6 @@ def load_stats_from_db(email):
         with conn.cursor() as cur:
             cur.execute("SELECT total_wins, total_losses, current_amount, consecutive_losses, initial_balance FROM user_settings WHERE email = %s", (email,))
             result = cur.fetchone()
-            cur.close()
             conn.close()
             if result:
                 return {
@@ -233,157 +253,82 @@ def clear_session_data(email):
             except Exception as e:
                 print(f"❌ Error clearing session data: {e}")
             finally:
-                cur.close()
                 conn.close()
 
-# --- Helper Functions for Trading Logic (Placeholders) ---
-# هذه الدوال تحتاج إلى إكمالها وربطها بعملية البوت الفعلية
-# حالياً هي مجرد نماذج لتوضيح كيفية قراءة البيانات وعرضها
-def get_balance_from_db(email):
-    # في تطبيق حقيقي، ستجلب الرصيد الحالي للبوت من قاعدة البيانات
-    # أو ستحتاج إلى آلية لتشغيل البوت في الخلفية وقراءة بياناته.
-    # هنا سنفترض أن stats_from_db تحتوي على الرصيد الحالي.
-    stats = load_stats_from_db(email)
-    if stats:
-        return stats.get('current_amount', 0)
-    return 0
+def get_current_balance_and_calculate_profit(email, initial_balance):
+    try:
+        ws = websocket.WebSocket()
+        ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=5)
+        
+        settings = load_settings_from_db(email)
+        if not settings: return 0
+        
+        auth_req = {"authorize": settings['user_token']}
+        ws.send(json.dumps(auth_req))
+        auth_response = json.loads(ws.recv())
+        if auth_response.get('error'): return 0
 
-def get_initial_balance_from_db(email):
-    stats = load_stats_from_db(email)
-    if stats:
-        return stats.get('initial_balance', 0)
+        current_balance = get_balance(ws)
+        if current_balance is not None:
+            return current_balance - initial_balance
+    except Exception as e:
+        return 0
+    finally:
+        if 'ws' in locals() and ws.connected:
+            ws.close()
     return 0
-
-def get_current_balance_and_calculate_profit(email):
-    # هذه دالة وهمية. في تطبيقك الحقيقي، البوت سيشغل في الخلفية
-    # ويحدث بياناته في الـ DB. هنا، سنقرأ فقط آخر حالة محفوظة.
-    stats = load_stats_from_db(email)
-    if stats:
-        initial_balance = stats.get('initial_balance', 0)
-        current_amount = stats.get('current_amount', 0)
-        profit = current_amount - initial_balance
-        return current_amount, profit
-    return 0, 0 # إذا لم يتم العثور على إحصائيات
 
 # --- Flask Routes ---
-@app.route('/')
-def index():
-    # إعادة التوجيه لصفحة تسجيل الدخول إذا لم يكن هناك بريد إلكتروني في الجلسة
-    # (نحن لا نستخدم session الخاصة بـ Flask، بل سنحفظ البريد في ملف مؤقت أو DB بسيط إذا لزم الأمر)
-    # الآن، سنعتمد على التحقق من البريد عند الوصول لـ /dashboard
-    return redirect(url_for('login'))
-
-@app.route('/login', methods=['GET', 'POST'])
+@app.route('/', methods=['GET', 'POST'])
 def login():
     error_message = None
     if request.method == 'POST':
         user_email = request.form['email'].lower()
         
         if not os.path.exists("user_ids.txt"):
-            error_message = "❌ Error: 'user_ids.txt' file not found. Please contact support."
-        else:
-            with open("user_ids.txt", "r") as f:
-                valid_emails = [line.strip().lower() for line in f.readlines()]
-                if user_email not in valid_emails:
-                    error_message = "❌ Sorry, you do not have access to this account."
-                else:
-                    # تم التحقق من البريد بنجاح، سنحفظه في ملف مؤقت أو قاعدة بيانات بسيطة لتتبع الجلسة
-                    # هنا سنستخدم ملف بسيط لتجاوز الحاجة لـ Flask session
-                    with open("current_user.txt", "w") as f:
-                        f.write(user_email)
-                    return redirect(url_for('dashboard'))
+            return render_template_string(LOGIN_HTML, error_message="❌ Error: 'user_ids.txt' file not found.")
+        
+        with open("user_ids.txt", "r") as f:
+            valid_emails = [line.strip().lower() for line in f.readlines()]
+            if user_email not in valid_emails:
+                error_message = "❌ Sorry, you do not have access to this account."
+            else:
+                session['user_email'] = user_email
+                return redirect(url_for('dashboard'))
     
     return render_template_string(LOGIN_HTML, error_message=error_message)
 
-@app.route('/dashboard')
+@app.route('/dashboard', methods=['GET', 'POST'])
 def dashboard():
-    # قراءة البريد الإلكتروني من الملف المؤقت
-    user_email = None
-    if os.path.exists("current_user.txt"):
-        with open("current_user.txt", "r") as f:
-            user_email = f.read().strip().lower()
-    
-    if not user_email:
+    if 'user_email' not in session:
         return redirect(url_for('login'))
-
+    
+    user_email = session['user_email']
     stats = load_stats_from_db(user_email)
-    
+
     if not stats or stats["initial_balance"] == 0:
-        # لا توجد جلسة مفتوحة، اطلب الإعدادات
-        return redirect(url_for('settings'))
+        if request.method == 'POST':
+            user_token = request.form['user_token']
+            base_amount = float(request.form['base_amount'])
+            tp_target = float(request.form['tp_target'])
+            max_consecutive_losses = int(request.form['max_consecutive_losses'])
+            
+            settings = {
+                "user_token": user_token,
+                "base_amount": base_amount,
+                "tp_target": tp_target,
+                "max_consecutive_losses": max_consecutive_losses
+            }
+            save_settings_and_start_session(user_email, settings)
+            stats = load_stats_from_db(user_email)
+            profit = stats['initial_balance'] - stats['initial_balance']
+            return render_template_string(STATS_HTML, stats=stats, profit=profit)
+
+        return render_template_string(SETTINGS_HTML)
     
-    # إذا كانت هناك جلسة، اعرض الإحصائيات
-    current_balance, profit = get_current_balance_and_calculate_profit(user_email) # قراءة آخر حالة من DB
+    profit = get_current_balance_and_calculate_profit(user_email, stats['initial_balance'])
     return render_template_string(STATS_HTML, stats=stats, profit=profit)
 
-@app.route('/settings', methods=['GET', 'POST'])
-def settings():
-    user_email = None
-    if os.path.exists("current_user.txt"):
-        with open("current_user.txt", "r") as f:
-            user_email = f.read().strip().lower()
-
-    if not user_email:
-        return redirect(url_for('login'))
-
-    if request.method == 'POST':
-        user_token = request.form['user_token']
-        base_amount = float(request.form['base_amount'])
-        tp_target = float(request.form['tp_target'])
-        max_consecutive_losses = int(request.form['max_consecutive_losses'])
-        
-        settings = {
-            "user_token": user_token,
-            "base_amount": base_amount,
-            "tp_target": tp_target,
-            "max_consecutive_losses": max_consecutive_losses
-        }
-        save_settings_and_start_session(user_email, settings)
-        
-        # بعد حفظ الإعدادات، ابدأ البوت (في تطبيق حقيقي، هذا سيبدأ عملية في الخلفية)
-        # هنا سنعيد التوجيه لصفحة الإحصائيات لعرض الحالة الأولية
-        return redirect(url_for('dashboard'))
-
-    return render_template_string(SETTINGS_HTML)
-
-@app.route('/logout')
-def logout():
-    user_email = None
-    if os.path.exists("current_user.txt"):
-        with open("current_user.txt", "r") as f:
-            user_email = f.read().strip().lower()
-    
-    if user_email:
-        clear_session_data(user_email) # امسح بيانات الجلسة من قاعدة البيانات
-        # امسح الملف المؤقت الذي يحفظ البريد
-        if os.path.exists("current_user.txt"):
-            os.remove("current_user.txt")
-            
-    # إعادة التوجيه لصفحة تسجيل الدخول
-    return redirect(url_for('login'))
-
-# --- Main Execution ---
 if __name__ == "__main__":
-    # تأكد من وجود ملف user_ids.txt
-    if not os.path.exists("user_ids.txt"):
-        print("❌ Error: 'user_ids.txt' file not found. Please create it and add authorized emails.")
-        sys.exit(1)
-        
-    # تأكد من أن قاعدة البيانات جاهزة
-    try:
-        conn = get_db_connection()
-        if conn:
-            conn.close()
-        else:
-            print("❌ Database connection failed. Ensure DB_URI is correct and the database is running.")
-            sys.exit(1)
-    except Exception as e:
-        print(f"❌ Error during database check: {e}")
-        sys.exit(1)
-
-    # تشغيل التطبيق
-    # Host='0.0.0.0' يجعل التطبيق متاحاً على شبكتك الداخلية
-    # Port=5000 هو المنفذ الافتراضي لـ Flask
-    # debug=True يسهل التطوير بإعادة تحميل التطبيق تلقائياً عند التغيير
-    # لكن يجب إيقافه في بيئة الإنتاج (مثل Render)
+    create_table_if_not_exists()
     app.run(host='0.0.0.0', port=5000, debug=True)
