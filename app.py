@@ -7,12 +7,13 @@ import psycopg2
 import os
 import sys
 from flask import Flask, render_template_string, request, redirect, url_for, session
+from apscheduler.schedulers.background import BackgroundScheduler
+import atexit
 
 app = Flask(__name__)
 app.secret_key = 'your_super_secret_key'  # قم بتغيير هذا إلى مفتاح سري خاص بك
 
 # --- Database Connection Details ---
-# قم باستبدال هذا الرابط برابط الاتصال الخاص بك
 DB_URI = "postgresql://bestan_user:gTJKgsCRwEu9ijNMD9d3IMxFcW5TAdE0@dpg-d329ao2dbo4c73a92kng-a.oregon-postgres.render.com/bestan" 
 
 # --- HTML Templates as Strings ---
@@ -114,7 +115,7 @@ STATS_HTML = """
             <li>Total Losses: {{ stats['total_losses'] }}</li>
             <li>Consecutive Losses: {{ stats['consecutive_losses'] }}</li>
             <li>Current Martingale Amount: ${{ stats['current_amount'] }}</li>
-            <li>Initial Balance: ${{ stats['initial_balance'] }}</li>
+            <li>Initial Balance: ${{ "%.2f"|format(stats['initial_balance']) }}</li>
         </ul>
         <p>Current P/L: <span class="{{ 'profit' if profit > 0 else 'loss' }}">${{ "%.2f"|format(profit) }}</span></p>
     </div>
@@ -211,6 +212,7 @@ def save_settings_and_start_session(email, settings):
                 """, (email, settings["user_token"], settings["base_amount"], settings["tp_target"], 
                       settings["max_consecutive_losses"], settings["base_amount"]))
                 conn.commit()
+                print("✅ New session started and settings saved to database.")
             except Exception as e:
                 print(f"❌ Error saving settings: {e}")
             finally:
@@ -255,32 +257,186 @@ def clear_session_data(email):
             finally:
                 conn.close()
 
-def get_current_balance_and_calculate_profit(email, initial_balance):
+# --- Trading Bot Logic ---
+is_trade_open = False
+contract_id = None
+user_email_for_bot = None
+
+def get_balance(ws):
+    req = {"balance": 1, "subscribe": 1}
+    try:
+        ws.send(json.dumps(req))
+        response = json.loads(ws.recv())
+        if response.get('msg_type') == 'balance':
+            return response.get('balance', {}).get('balance')
+        return None
+    except Exception:
+        return None
+
+def analyse_data(df_ticks):
+    if len(df_ticks) < 5:
+        return "Neutral", "Insufficient data: Less than 5 ticks available."
+    last_5_ticks = df_ticks.tail(5).copy()
+    open_5_ticks = last_5_ticks['price'].iloc[0]
+    close_5_ticks = last_5_ticks['price'].iloc[-1]
+    if close_5_ticks > open_5_ticks:
+        return "Buy", None
+    elif close_5_ticks < open_5_ticks:
+        return "Sell", None
+    else:
+        return "Neutral", "No clear signal."
+
+def place_order(ws, proposal_id, amount):
+    req = {"buy": proposal_id, "price": round(max(0.5, amount), 2)}
+    try:
+        ws.send(json.dumps(req))
+        response = json.loads(ws.recv())
+        return response
+    except Exception:
+        return {"error": {"message": "Order placement failed."}}
+
+def check_contract_status(ws, contract_id):
+    req = {"proposal_open_contract": 1, "contract_id": contract_id, "subscribe": 1}
+    try:
+        ws.send(json.dumps(req))
+        response = json.loads(ws.recv())
+        return response.get('proposal_open_contract')
+    except Exception:
+        return None
+
+# --- Background Trading Bot Job ---
+def run_trading_job():
+    global is_trade_open, contract_id, user_email_for_bot
+    
+    if user_email_for_bot is None:
+        print("Bot is inactive. Awaiting a user login to start trading.")
+        return
+    
+    stats = load_stats_from_db(user_email_for_bot)
+    settings = load_settings_from_db(user_email_for_bot)
+
+    if not stats or not settings:
+        print(f"❌ No active session found for email: {user_email_for_bot}. Trading job stopped.")
+        # Clear the global state to stop the bot from trying to run
+        user_email_for_bot = None
+        return
+
+    total_wins = stats["total_wins"]
+    total_losses = stats["total_losses"]
+    current_amount = stats["current_amount"]
+    consecutive_losses = stats["consecutive_losses"]
+    initial_balance = stats["initial_balance"]
+    
+    user_token = settings["user_token"]
+    base_amount = settings["base_amount"]
+    tp_target = settings["tp_target"]
+    max_consecutive_losses = settings["max_consecutive_losses"]
+    
     try:
         ws = websocket.WebSocket()
-        ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=5)
-        
-        settings = load_settings_from_db(email)
-        if not settings: return 0
-        
-        auth_req = {"authorize": settings['user_token']}
+        ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
+        auth_req = {"authorize": user_token}
         ws.send(json.dumps(auth_req))
         auth_response = json.loads(ws.recv())
-        if auth_response.get('error'): return 0
 
-        current_balance = get_balance(ws)
-        if current_balance is not None:
-            return current_balance - initial_balance
+        if auth_response.get('error'):
+            print(f"❌ Auth failed for {user_email_for_bot}: {auth_response['error']['message']}")
+            return
+        
+        # --- Get Account Balance and Currency ---
+        balance_req = {"balance": 1}
+        ws.send(json.dumps(balance_req))
+        balance_response = json.loads(ws.recv())
+        currency = balance_response.get('balance', {}).get('currency', 'USD')
+        
+        current_balance = balance_response.get('balance', {}).get('balance')
+
+        if initial_balance == 0 or initial_balance is None:
+            initial_balance = current_balance
+            update_stats_in_db(user_email_for_bot, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance)
+        
+        # --- Trading Logic ---
+        if not is_trade_open:
+            req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
+            ws.send(json.dumps(req))
+            tick_data = json.loads(ws.recv())
+            
+            if 'history' in tick_data and tick_data['history']['prices']:
+                ticks = tick_data['history']['prices']
+                df_ticks = pd.DataFrame({'price': ticks})
+                signal, error_msg = analyse_data(df_ticks)
+                
+                if signal in ['Buy', 'Sell']:
+                    contract_type = "CALL" if signal == 'Buy' else "PUT"
+                    proposal_req = {
+                        "proposal": 1,
+                        "amount": round(current_amount, 2),
+                        "basis": "stake",
+                        "contract_type": contract_type,
+                        "currency": currency, # Use the detected currency
+                        "duration": 15,
+                        "duration_unit": "s",
+                        "symbol": "R_100"
+                    }
+                    ws.send(json.dumps(proposal_req))
+                    proposal_response = json.loads(ws.recv())
+                    
+                    if 'proposal' in proposal_response:
+                        proposal_id = proposal_response['proposal']['id']
+                        order_response = place_order(ws, proposal_id, current_amount)
+                        
+                        if 'buy' in order_response and 'contract_id' in order_response['buy']:
+                            is_trade_open = True
+                            print(f"✅ Placed a {contract_type} trade for ${current_amount:.2f}")
+                            contract_id = order_response['buy']['contract_id']
+        else: # If a trade is open, check its status
+            print("⏳ Waiting for trade result...")
+            time.sleep(20) # Wait for 20 seconds to be sure the 15-second trade is done
+            contract_info = check_contract_status(ws, contract_id)
+
+            if contract_info and contract_info.get('is_sold'):
+                profit = contract_info.get('profit', 0)
+                
+                if profit > 0:
+                    consecutive_losses = 0
+                    total_wins += 1
+                    current_amount = base_amount
+                    print(f"🎉 WIN! Profit: ${profit:.2f}. Total wins: {total_wins}")
+                elif profit < 0:
+                    consecutive_losses += 1
+                    total_losses += 1
+                    next_bet = current_amount * 2.2
+                    current_amount = max(base_amount, next_bet)
+                    print(f"🔻 LOSS! New amount: ${current_amount:.2f}. Consecutive losses: {consecutive_losses}. Total losses: {total_losses}")
+                else:
+                    print("Trade ended with no profit/loss.")
+                    
+                is_trade_open = False
+                
+                current_balance = get_balance(ws)
+                update_stats_in_db(user_email_for_bot, total_wins, total_losses, current_amount, consecutive_losses, initial_balance)
+
+                if (current_balance - initial_balance) >= tp_target:
+                    print(f"🎉 Take Profit target (${tp_target}) reached. Stopping bot.")
+                    clear_session_data(user_email_for_bot)
+                    scheduler.shutdown(wait=False)
+                    return
+                
+                if consecutive_losses >= max_consecutive_losses:
+                    print(f"🔴 Maximum consecutive losses ({max_consecutive_losses}) reached. Stopping bot.")
+                    clear_session_data(user_email_for_bot)
+                    scheduler.shutdown(wait=False)
+                    return
     except Exception as e:
-        return 0
+        print(f"\n❌ An error occurred in trading job: {e}")
     finally:
         if 'ws' in locals() and ws.connected:
             ws.close()
-    return 0
 
 # --- Flask Routes ---
 @app.route('/', methods=['GET', 'POST'])
 def login():
+    global user_email_for_bot
     error_message = None
     if request.method == 'POST':
         user_email = request.form['email'].lower()
@@ -294,6 +450,8 @@ def login():
                 error_message = "❌ Sorry, you do not have access to this account."
             else:
                 session['user_email'] = user_email
+                user_email_for_bot = user_email
+                print(f"User {user_email_for_bot} logged in and trading job scheduled.")
                 return redirect(url_for('dashboard'))
     
     return render_template_string(LOGIN_HTML, error_message=error_message)
@@ -321,14 +479,21 @@ def dashboard():
             }
             save_settings_and_start_session(user_email, settings)
             stats = load_stats_from_db(user_email)
-            profit = stats['initial_balance'] - stats['initial_balance']
+            profit = 0
             return render_template_string(STATS_HTML, stats=stats, profit=profit)
-
         return render_template_string(SETTINGS_HTML)
     
-    profit = get_current_balance_and_calculate_profit(user_email, stats['initial_balance'])
+    profit = stats['current_amount'] - stats['initial_balance'] if stats['initial_balance'] is not None else 0
     return render_template_string(STATS_HTML, stats=stats, profit=profit)
 
+# --- Scheduler Setup ---
+scheduler = BackgroundScheduler()
+# Schedule the job to run at the 58th second of every minute
+scheduler.add_job(func=run_trading_job, trigger='cron', second=58)
+
+# The scheduler will run when the app starts
 if __name__ == "__main__":
     create_table_if_not_exists()
+    scheduler.start()
+    atexit.register(lambda: scheduler.shutdown())
     app.run(host='0.0.0.0', port=5000, debug=True)
