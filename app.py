@@ -30,11 +30,11 @@ def analyse_data(df_ticks):
     
     # Check for a BUY signal (Upward trend)
     if close_5_ticks > open_5_ticks:
-        return "Buy", None
+        return "Sell", None
     
     # Check for a SELL signal (Downward trend)
     elif close_5_ticks < open_5_ticks:
-        return "Sell", None
+        return "Buy", None
     
     else:
         return "Neutral", "No clear signal."
