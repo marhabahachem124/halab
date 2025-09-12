@@ -9,7 +9,7 @@ import sys
 
 # --- Database Connection Details ---
 # قم باستبدال هذا الرابط برابط الاتصال الخاص بك
-DB_URI = "postgresql://user:password@host:port/dbname" 
+DB_URI = "postgresql://bestan_user:gTJKgsCRwEu9ijNMD9d3IMxFcW5TAdE0@dpg-d329ao2dbo4c73a92kng-a.oregon-postgres.render.com/bestan" 
 
 # --- Database Functions ---
 def get_db_connection():
