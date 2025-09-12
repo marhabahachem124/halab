@@ -24,13 +24,18 @@ def analyse_data(df_ticks):
     
     last_5_ticks = df_ticks.tail(5).copy()
     
+    # Check for direction of all 5 ticks
     open_5_ticks = last_5_ticks['price'].iloc[0]
     close_5_ticks = last_5_ticks['price'].iloc[-1]
     
+    # Check for a BUY signal (Upward trend)
     if close_5_ticks > open_5_ticks:
         return "Buy", None
+    
+    # Check for a SELL signal (Downward trend)
     elif close_5_ticks < open_5_ticks:
         return "Sell", None
+    
     else:
         return "Neutral", "No clear signal."
 
@@ -97,6 +102,9 @@ if "current_balance" not in st.session_state:
     st.session_state.current_balance = None
 if "balance_check_needed" not in st.session_state:
     st.session_state.balance_check_needed = True
+# --- NEW: Store account currency ---
+if "account_currency" not in st.session_state:
+    st.session_state.account_currency = "USD" # Default to USD
 
 # --- Display UI and handle user input ---
 st.header("KHOURYBOT - The Simple Trader 🤖")
@@ -144,6 +152,7 @@ state = st.session_state
 # --- Main Bot Logic Loop ---
 if state.bot_running:
     try:
+        # Get and display balance
         ws = websocket.WebSocket()
         ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
         auth_req = {"authorize": state.user_token}
@@ -155,18 +164,24 @@ if state.bot_running:
             state.bot_running = False
             st.rerun()
         else:
+            # --- NEW: Get and store currency ---
+            state.account_currency = auth_response.get('authorize', {}).get('currency')
+            
             if state.initial_balance is None:
                 balance = get_balance(ws)
                 if balance is not None:
                     state.initial_balance = balance
                     state.current_balance = balance
             
+            # Update UI
             wins_losses_placeholder.write(f"**Wins:** {state.total_wins} | **Losses:** {state.total_losses}")
             if state.current_balance is not None:
-                balance_placeholder.metric("Current Balance", f"{state.current_balance:.2f}$", 
+                balance_placeholder.metric(f"Current Balance ({state.account_currency})", 
+                                          f"{state.current_balance:.2f}{state.account_currency}", 
                                           delta=round(state.current_balance - state.initial_balance, 2), 
                                           delta_color="normal")
             
+            # Trading Logic
             if not state.is_trade_open:
                 now = datetime.now()
                 seconds_to_wait = 60 - now.second
@@ -184,16 +199,16 @@ if state.bot_running:
                         signal, error_msg = analyse_data(df_ticks)
                         
                         if signal in ['Buy', 'Sell']:
-                            # --- MODIFIED PART: Invert the signal ---
-                            contract_type = "PUT" if signal == 'Buy' else "CALL"
-                            # --- END OF MODIFIED PART ---
-
+                            contract_type = "CALL" if signal == 'Buy' else "PUT"
+                            
                             proposal_req = {
                                 "proposal": 1,
                                 "amount": round(st.session_state.current_amount, 2),
                                 "basis": "stake",
                                 "contract_type": contract_type,
-                                "currency": "USD",
+                                # --- MODIFIED PART: Use dynamic currency ---
+                                "currency": state.account_currency,
+                                # --- END OF MODIFIED PART ---
                                 "duration": 5,  
                                 "duration_unit": "t",
                                 "symbol": "R_100"
@@ -214,8 +229,7 @@ if state.bot_running:
             elif state.is_trade_open:
                 status_placeholder.info(f"**Bot Status:** Waiting for trade result...")
                 timer_placeholder.empty()
-                # Wait for a bit longer than the trade duration to ensure it resolves
-                if (datetime.now() - state.trade_start_time).total_seconds() >= 10: 
+                if (datetime.now() - state.trade_start_time).total_seconds() >= 10:
                     contract_info = check_contract_status(ws, state.contract_id)
                     if contract_info and contract_info.get('is_sold'):
                         profit = contract_info.get('profit', 0)
@@ -257,7 +271,8 @@ if state.bot_running:
 else:
     status_placeholder.info(f"**Bot Status:** {'Stopped'}")
     if state.current_balance is not None:
-        balance_placeholder.metric("Current Balance", f"{state.current_balance:.2f}$", 
+        balance_placeholder.metric(f"Current Balance ({state.account_currency})", 
+                                  f"{state.current_balance:.2f}{state.account_currency}", 
                                   delta=round(state.current_balance - (state.initial_balance if state.initial_balance is not None else state.current_balance), 2), 
                                   delta_color="normal")
     else:
