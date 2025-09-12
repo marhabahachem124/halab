@@ -2,3 +2,4 @@ websocket-client
 pandas
 psycopg2-binary
 numpy
+Flask
