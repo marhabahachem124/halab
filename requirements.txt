@@ -1,5 +1,5 @@
-websocket-client
-pandas
+Flask==2.3.0
 psycopg2-binary
-numpy
-Flask
+pandas
+APScheduler>=3.0
+websocket-client
