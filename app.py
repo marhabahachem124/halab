@@ -1,12 +1,129 @@
-import streamlit as st
-import json
 import time
 import websocket
+import json
 import pandas as pd
-from datetime import datetime, timedelta
-import threading
+from datetime import datetime
+import psycopg2
+import os
+import sys
 
-# --- Helper Functions ---
+# --- Database Connection Details ---
+# قم باستبدال هذا الرابط برابط الاتصال الخاص بك
+DB_URI = "postgresql://user:password@host:port/dbname" 
+
+# --- Database Functions ---
+def get_db_connection():
+    try:
+        return psycopg2.connect(DB_URI)
+    except Exception as e:
+        print(f"❌ Failed to connect to the database: {e}")
+        return None
+
+def load_settings_from_db(email):
+    conn = get_db_connection()
+    if conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT user_token, base_amount, tp_target, max_consecutive_losses FROM user_settings WHERE email = %s", (email,))
+            result = cur.fetchone()
+            conn.close()
+            if result:
+                return {
+                    "user_token": result[0],
+                    "base_amount": result[1],
+                    "tp_target": result[2],
+                    "max_consecutive_losses": result[3]
+                }
+    return None
+
+def load_stats_from_db(email):
+    conn = get_db_connection()
+    if conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT total_wins, total_losses, current_amount, consecutive_losses, initial_balance FROM user_settings WHERE email = %s", (email,))
+            result = cur.fetchone()
+            conn.close()
+            if result:
+                return {
+                    "total_wins": result[0],
+                    "total_losses": result[1],
+                    "current_amount": result[2],
+                    "consecutive_losses": result[3],
+                    "initial_balance": result[4]
+                }
+    return None
+
+def save_settings_and_start_session(email, settings):
+    conn = get_db_connection()
+    if conn:
+        with conn.cursor() as cur:
+            try:
+                # Save settings and reset stats for the new session
+                cur.execute("""
+                    INSERT INTO user_settings (email, user_token, base_amount, tp_target, max_consecutive_losses,
+                                               total_wins, total_losses, current_amount, consecutive_losses, initial_balance)
+                    VALUES (%s, %s, %s, %s, %s, 0, 0, %s, 0, 0)
+                    ON CONFLICT (email) DO UPDATE SET
+                    user_token = EXCLUDED.user_token,
+                    base_amount = EXCLUDED.base_amount,
+                    tp_target = EXCLUDED.tp_target,
+                    max_consecutive_losses = EXCLUDED.max_consecutive_losses,
+                    total_wins = 0,
+                    total_losses = 0,
+                    current_amount = EXCLUDED.base_amount,
+                    consecutive_losses = 0,
+                    initial_balance = 0
+                """, (email, settings["user_token"], settings["base_amount"], settings["tp_target"], 
+                      settings["max_consecutive_losses"], settings["base_amount"]))
+                conn.commit()
+                print("✅ New session started and settings saved to database.")
+            except Exception as e:
+                print(f"❌ Error saving settings: {e}")
+            finally:
+                cur.close()
+                conn.close()
+
+def update_stats_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=None):
+    conn = get_db_connection()
+    if conn:
+        with conn.cursor() as cur:
+            try:
+                query = """
+                    UPDATE user_settings
+                    SET total_wins = %s,
+                        total_losses = %s,
+                        current_amount = %s,
+                        consecutive_losses = %s
+                    WHERE email = %s
+                """
+                params = (total_wins, total_losses, current_amount, consecutive_losses, email)
+
+                if initial_balance is not None:
+                    query = query.replace("WHERE", ", initial_balance = %s WHERE")
+                    params = (total_wins, total_losses, current_amount, consecutive_losses, initial_balance, email)
+                
+                cur.execute(query, params)
+                conn.commit()
+            except Exception as e:
+                print(f"❌ Error updating stats in DB: {e}")
+            finally:
+                conn.close()
+
+def clear_session_data(email):
+    conn = get_db_connection()
+    if conn:
+        with conn.cursor() as cur:
+            try:
+                # This will delete the user's entire row from the table
+                cur.execute("DELETE FROM user_settings WHERE email = %s", (email,))
+                conn.commit()
+                print("✅ Session data completely cleared from the database.")
+            except Exception as e:
+                print(f"❌ Error clearing session data: {e}")
+            finally:
+                cur.close()
+                conn.close()
+
+# --- Helper Functions for Trading Logic ---
 def get_balance(ws):
     req = {"balance": 1, "subscribe": 1}
     try:
@@ -21,21 +138,13 @@ def get_balance(ws):
 def analyse_data(df_ticks):
     if len(df_ticks) < 5:
         return "Neutral", "Insufficient data: Less than 5 ticks available."
-    
     last_5_ticks = df_ticks.tail(5).copy()
-    
-    # Check for direction based on first vs last tick (Trend Strategy)
     open_5_ticks = last_5_ticks['price'].iloc[0]
     close_5_ticks = last_5_ticks['price'].iloc[-1]
-    
-    # Check for a BUY signal (Upward trend)
     if close_5_ticks > open_5_ticks:
         return "Buy", None
-    
-    # Check for a SELL signal (Downward trend)
     elif close_5_ticks < open_5_ticks:
         return "Sell", None
-    
     else:
         return "Neutral", "No clear signal."
 
@@ -43,14 +152,8 @@ def place_order(ws, proposal_id, amount):
     req = {"buy": proposal_id, "price": round(max(0.5, amount), 2)}
     try:
         ws.send(json.dumps(req))
-        while True:
-            response = json.loads(ws.recv())
-            if response.get('msg_type') == 'buy':
-                return response
-            elif response.get('msg_type') == 'balance':
-                st.session_state.current_balance = response.get('balance', {}).get('balance')
-            else:
-                pass
+        response = json.loads(ws.recv())
+        return response
     except Exception:
         return {"error": {"message": "Order placement failed."}}
 
@@ -58,134 +161,101 @@ def check_contract_status(ws, contract_id):
     req = {"proposal_open_contract": 1, "contract_id": contract_id, "subscribe": 1}
     try:
         ws.send(json.dumps(req))
-        while True:
-            response = json.loads(ws.recv())
-            if response.get('msg_type') == 'proposal_open_contract':
-                return response.get('proposal_open_contract')
-            elif response.get('msg_type') == 'balance':
-                st.session_state.current_balance = response.get('balance', {}).get('balance')
-            else:
-                pass
+        response = json.loads(ws.recv())
+        return response.get('proposal_open_contract')
     except Exception:
         return None
 
-# --- Initial Setup ---
-if "user_token" not in st.session_state:
-    st.session_state.user_token = ""
-if "bot_running" not in st.session_state:
-    st.session_state.bot_running = False
-if "is_trade_open" not in st.session_state:
-    st.session_state.is_trade_open = False
-if "last_action_time" not in st.session_state:
-    st.session_state.last_action_time = datetime.now()
-if "initial_balance" not in st.session_state:
-    st.session_state.initial_balance = None
-if "base_amount" not in st.session_state:
-    st.session_state.base_amount = 0.5
-if "current_amount" not in st.session_state:
-    st.session_state.current_amount = 0.5
-if "consecutive_losses" not in st.session_state:
-    st.session_state.consecutive_losses = 0
-if "total_wins" not in st.session_state:
-    st.session_state.total_wins = 0
-if "total_losses" not in st.session_state:
-    st.session_state.total_losses = 0
-if "tp_target" not in st.session_state:
-    st.session_state.tp_target = 10.0
-if "max_consecutive_losses" not in st.session_state:
-    st.session_state.max_consecutive_losses = 5
-if "trade_start_time" not in st.session_state:
-    st.session_state.trade_start_time = None
-if "contract_id" not in st.session_state:
-    st.session_state.contract_id = None
-if "current_balance" not in st.session_state:
-    st.session_state.current_balance = None
-if "balance_check_needed" not in st.session_state:
-    st.session_state.balance_check_needed = True
-if "account_currency" not in st.session_state:
-    st.session_state.account_currency = "USD"
+# --- Main Logic ---
+def run_bot_engine_cli():
+    # 1. Ask for user email and authenticate
+    user_email = input("👋 Enter your registered email to continue: ").lower()
 
-# --- Display UI and handle user input ---
-st.header("KHOURYBOT - The Simple Trader 🤖")
+    if not os.path.exists("user_ids.txt"):
+        print("❌ Error: 'user_ids.txt' file not found. Please create it and add your email.")
+        return
 
-with st.expander("Bot Settings", expanded=True):
-    st.session_state.user_token = st.text_input("Enter your Deriv API token:", type="password", key="api_token_input")
-    st.session_state.base_amount = st.number_input("Base Amount ($)", min_value=0.5, step=0.5, value=st.session_state.base_amount)
-    st.session_state.tp_target = st.number_input("Take Profit Target ($)", min_value=1.0, step=1.0, value=st.session_state.tp_target)
-    st.session_state.max_consecutive_losses = st.number_input("Max Consecutive Losses", min_value=1, step=1, value=st.session_state.max_consecutive_losses)
+    with open("user_ids.txt", "r") as f:
+        valid_emails = [line.strip().lower() for line in f.readlines()]
+        if user_email not in valid_emails:
+            print("❌ Your email is not activated. Please contact support.")
+            return
+
+    # 2. Check for existing session or start a new one
+    stats = load_stats_from_db(user_email)
     
-    col1, col2 = st.columns(2)
-    with col1:
-        start_button = st.button("Start Bot", type="primary")
-    with col2:
-        stop_button = st.button("Stop Bot")
+    # If no stats or initial_balance is 0, it means it's a new session or previous session data was cleared.
+    if not stats or stats["initial_balance"] == 0: 
+        print("\n⚙️ Starting a new session. Please configure the bot:")
+        user_token = input("Enter your Deriv API token: ")
+        base_amount = float(input("Enter Base Amount ($): "))
+        tp_target = float(input("Enter Take Profit Target ($): "))
+        max_consecutive_losses = int(input("Enter Max Consecutive Losses: "))
+        
+        settings = {
+            "user_token": user_token,
+            "base_amount": base_amount,
+            "tp_target": tp_target,
+            "max_consecutive_losses": max_consecutive_losses
+        }
+        save_settings_and_start_session(user_email, settings)
+        stats = load_stats_from_db(user_email) # Reload stats after saving
+    else:
+        print("\n✅ Resuming an existing session.")
+        settings = load_settings_from_db(user_email)
+        
+    # 3. Load settings and stats to start the bot
+    user_token = settings["user_token"]
+    base_amount = settings["base_amount"]
+    tp_target = settings["tp_target"]
+    max_consecutive_losses = settings["max_consecutive_losses"]
 
-    if start_button:
-        if not st.session_state.user_token:
-            st.error("Please enter a valid API token before starting the bot.")
-        else:
-            st.session_state.bot_running = True
-            st.session_state.current_amount = st.session_state.base_amount
-            st.session_state.consecutive_losses = 0
-            st.session_state.total_wins = 0
-            st.session_state.total_losses = 0
-            st.session_state.balance_check_needed = True
-            st.rerun()
-            
-    if stop_button:
-        st.session_state.bot_running = False
-        st.session_state.is_trade_open = False
-        st.rerun()
+    total_wins = stats["total_wins"]
+    total_losses = stats["total_losses"]
+    current_amount = stats["current_amount"]
+    consecutive_losses = stats["consecutive_losses"]
+    initial_balance = stats["initial_balance"]
 
-st.markdown("---")
-st.header("Live Bot Status")
+    is_trade_open = False
+    contract_id = None
+    
+    print("\n🚀 Bot is starting. Press Ctrl+C to stop.")
 
-# --- Display dynamic status placeholders ---
-status_placeholder = st.empty()
-wins_losses_placeholder = st.empty()
-balance_placeholder = st.empty()
-timer_placeholder = st.empty()
-
-state = st.session_state
-
-# --- Main Bot Logic Loop ---
-if state.bot_running:
     try:
-        # Get and display balance
         ws = websocket.WebSocket()
         ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
-        auth_req = {"authorize": state.user_token}
+        auth_req = {"authorize": user_token}
         ws.send(json.dumps(auth_req))
         auth_response = json.loads(ws.recv())
 
         if auth_response.get('error'):
-            status_placeholder.error(f"❌ Auth failed: {auth_response['error']['message']}")
-            state.bot_running = False
-            st.rerun()
-        else:
-            state.account_currency = auth_response.get('authorize', {}).get('currency')
-            
-            if state.initial_balance is None:
-                balance = get_balance(ws)
-                if balance is not None:
-                    state.initial_balance = balance
-                    state.current_balance = balance
-            
-            # Update UI
-            wins_losses_placeholder.write(f"**Wins:** {state.total_wins} | **Losses:** {state.total_losses}")
-            if state.current_balance is not None:
-                balance_placeholder.metric(f"Current Balance ({state.account_currency})", 
-                                          f"{state.current_balance:.2f}{state.account_currency}", 
-                                          delta=round(state.current_balance - state.initial_balance, 2), 
-                                          delta_color="normal")
-            
-            # Trading Logic
-            if not state.is_trade_open:
+            print(f"❌ Auth failed: {auth_response['error']['message']}")
+            return
+
+        current_balance = get_balance(ws)
+        if initial_balance == 0 or initial_balance is None:
+            initial_balance = current_balance
+            update_stats_in_db(user_email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance)
+        
+        while True:
+            os.system('cls' if os.name == 'nt' else 'clear')
+            print("📈 Welcome with KHOURYBOT Autotrading")
+            print("-" * 40)
+            print("📊 Trading Stats:")
+            print(f"  - Total Wins: {total_wins}")
+            print(f"  - Total Losses: {total_losses}")
+            print(f"  - Consecutive Losses: {consecutive_losses}")
+            print(f"  - Current Martingale Amount: ${current_amount:.2f}")
+            print(f"  - Current Balance: ${current_balance:.2f}")
+            profit = current_balance - initial_balance
+            print(f"  - Total P/L: ${profit:.2f}")
+            print("-" * 40)
+
+            if not is_trade_open:
                 now = datetime.now()
                 seconds_to_wait = 60 - now.second
-                status_placeholder.info(f"**Bot Status:** Analysing... Waiting for the next minute")
-                timer_placeholder.metric("Time until next analysis", f"{seconds_to_wait}s")
-                
+                print(f"🔄 Bot Status: Analysing... Waiting for the next minute ({seconds_to_wait}s)")
+
                 if seconds_to_wait <= 2:
                     req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
                     ws.send(json.dumps(req))
@@ -197,80 +267,82 @@ if state.bot_running:
                         signal, error_msg = analyse_data(df_ticks)
                         
                         if signal in ['Buy', 'Sell']:
-                            contract_type = "PUT" if signal == 'Buy' else "CALL"
-                            
+                            contract_type = "CALL" if signal == 'Buy' else "PUT"
                             proposal_req = {
                                 "proposal": 1,
-                                "amount": round(st.session_state.current_amount, 2),
+                                "amount": round(current_amount, 2),
                                 "basis": "stake",
                                 "contract_type": contract_type,
-                                "currency": state.account_currency,
+                                "currency": "USD",
                                 "duration": 15,
                                 "duration_unit": "s",
                                 "symbol": "R_100"
                             }
-                            
                             ws.send(json.dumps(proposal_req))
                             proposal_response = json.loads(ws.recv())
                             
                             if 'proposal' in proposal_response:
                                 proposal_id = proposal_response['proposal']['id']
-                                order_response = place_order(ws, proposal_id, st.session_state.current_amount)
+                                order_response = place_order(ws, proposal_id, current_amount)
                                 
                                 if 'buy' in order_response and 'contract_id' in order_response['buy']:
-                                    st.session_state.is_trade_open = True
-                                    st.session_state.trade_start_time = datetime.now()
-                                    st.session_state.contract_id = order_response['buy']['contract_id']
+                                    is_trade_open = True
+                                    print(f"✅ Placed a {contract_type} trade for ${current_amount:.2f}")
+                                    contract_id = order_response['buy']['contract_id']
             
-            elif state.is_trade_open:
-                status_placeholder.info(f"**Bot Status:** Waiting for trade result...")
-                timer_placeholder.empty()
-                if (datetime.now() - state.trade_start_time).total_seconds() >= 20:
-                    contract_info = check_contract_status(ws, state.contract_id)
-                    if contract_info and contract_info.get('is_sold'):
-                        profit = contract_info.get('profit', 0)
+            elif is_trade_open:
+                print("⏳ Waiting for trade result...")
+                time.sleep(20)
+                contract_info = check_contract_status(ws, contract_id)
+
+                if contract_info and contract_info.get('is_sold'):
+                    profit = contract_info.get('profit', 0)
+                    
+                    if profit > 0:
+                        consecutive_losses = 0
+                        total_wins += 1
+                        current_amount = base_amount
+                        print(f"🎉 WIN! Profit: ${profit:.2f}. Total wins: {total_wins}")
+                    elif profit < 0:
+                        consecutive_losses += 1
+                        total_losses += 1
+                        next_bet = current_amount * 2.2
+                        current_amount = max(base_amount, next_bet)
+                        print(f"🔻 LOSS! New amount: ${current_amount:.2f}. Consecutive losses: {consecutive_losses}. Total losses: {total_losses}")
+                    else:
+                        print("Trade ended with no profit/loss.")
                         
-                        if profit > 0:
-                            state.consecutive_losses = 0
-                            state.total_wins += 1
-                            state.current_amount = state.base_amount
-                        elif profit < 0:
-                            state.consecutive_losses += 1
-                            state.total_losses += 1
-                            next_bet = state.current_amount * 2.2
-                            state.current_amount = max(state.base_amount, next_bet)
-                        else:
-                            pass
-                            
-                        state.is_trade_open = False
-                        
-                        current_balance = get_balance(ws)
-                        if current_balance is not None:
-                            state.current_balance = current_balance
-                            if state.tp_target and (current_balance - state.initial_balance) >= state.tp_target:
-                                state.bot_running = False
-                                st.rerun()
-                            if state.consecutive_losses >= state.max_consecutive_losses:
-                                state.bot_running = False
-                                st.rerun()
+                    is_trade_open = False
+                    
+                    current_balance = get_balance(ws)
+                    update_stats_in_db(user_email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance)
+
+                    # Check for TP/SL conditions or manual stop
+                    session_ended = False
+                    if (current_balance - initial_balance) >= tp_target:
+                        print(f"🎉 Take Profit target (${tp_target}) reached. Ending session and clearing data.")
+                        session_ended = True
+                    elif consecutive_losses >= max_consecutive_losses:
+                        print(f"🔴 Maximum consecutive losses ({max_consecutive_losses}) reached. Ending session and clearing data.")
+                        session_ended = True
+                    
+                    if session_ended:
+                        clear_session_data(user_email)
+                        print("\nWaiting for you to start a new session. Press Ctrl+C to exit.")
+                        # Break the loop to stop the bot gracefully
+                        break 
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        print("\n👋 Bot stopped by user. Clearing current session data.")
+        clear_session_data(user_email)
     except Exception as e:
-        status_placeholder.error(f"❌ Connection lost. Reconnecting... Error: {e}")
-        time.sleep(5)
-        st.rerun()
+        print(f"\n❌ An error occurred: {e}")
+        print("Clearing current session data due to error.")
+        clear_session_data(user_email)
     finally:
         if 'ws' in locals() and ws.connected:
             ws.close()
-    
-    time.sleep(1)
-    st.rerun()
 
-else:
-    status_placeholder.info(f"**Bot Status:** {'Stopped'}")
-    if state.current_balance is not None:
-        balance_placeholder.metric(f"Current Balance ({state.account_currency})", 
-                                  f"{state.current_balance:.2f}{state.account_currency}", 
-                                  delta=round(state.current_balance - (state.initial_balance if state.initial_balance is not None else state.current_balance), 2), 
-                                  delta_color="normal")
-    else:
-        balance_placeholder.info("Enter API token to get balance.")
-    wins_losses_placeholder.write(f"**Wins:** {state.total_wins} | **Losses:** {state.total_losses}")
+if __name__ == "__main__":
+    run_bot_engine_cli()
