@@ -13,7 +13,7 @@ app = Flask(__name__)
 # app.secret_key = 'your_super_secret_key' 
 
 # --- Database Connection Details ---
-DB_URI = "postgresql://user:password@host:port/dbname" 
+DB_URI = "postgresql://bestan_user:gTJKgsCRwEu9ijNMD9d3IMxFcW5TAdE0@dpg-d329ao2dbo4c73a92kng-a.oregon-postgres.render.com/bestan" 
 
 # --- HTML Templates as Strings ---
 LOGIN_HTML = """
