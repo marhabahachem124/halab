@@ -199,7 +199,7 @@ if state.bot_running:
                         signal, error_msg = analyse_data(df_ticks)
                         
                         if signal in ['Buy', 'Sell']:
-                            contract_type = "CALL" if signal == 'Sell' else "PUT"
+                            contract_type = "CALL" if signal == 'Buy' else "PUT"
                             
                             proposal_req = {
                                 "proposal": 1,
