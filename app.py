@@ -209,8 +209,8 @@ if state.bot_running:
                                 # --- MODIFIED PART: Use dynamic currency ---
                                 "currency": state.account_currency,
                                 # --- END OF MODIFIED PART ---
-                                "duration": 30,  
-                                "duration_unit": "s",
+                                "duration": 10,  
+                                "duration_unit": "t",
                                 "symbol": "R_100"
                             }
                             
@@ -229,7 +229,7 @@ if state.bot_running:
             elif state.is_trade_open:
                 status_placeholder.info(f"**Bot Status:** Waiting for trade result...")
                 timer_placeholder.empty()
-                if (datetime.now() - state.trade_start_time).total_seconds() >= 40:
+                if (datetime.now() - state.trade_start_time).total_seconds() >= 20:
                     contract_info = check_contract_status(ws, state.contract_id)
                     if contract_info and contract_info.get('is_sold'):
                         profit = contract_info.get('profit', 0)
