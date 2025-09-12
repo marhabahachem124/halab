@@ -19,21 +19,21 @@ def get_balance(ws):
         return None
 
 def analyse_data(df_ticks):
-    if len(df_ticks) < 5:
-        return "Neutral", "Insufficient data: Less than 5 ticks available."
+    if len(df_ticks) < 15:
+        return "Neutral", "Insufficient data: Less than 15 ticks available."
     
-    last_5_ticks = df_ticks.tail(5).copy()
+    last_15_ticks = df_ticks.tail(15).copy()
     
-    # Check for direction of all 5 ticks
-    open_5_ticks = last_5_ticks['price'].iloc[0]
-    close_5_ticks = last_5_ticks['price'].iloc[-1]
+    # Check for direction based on first vs last tick (Trend Strategy)
+    open_15_ticks = last_15_ticks['price'].iloc[0]
+    close_15_ticks = last_15_ticks['price'].iloc[-1]
     
     # Check for a BUY signal (Upward trend)
-    if close_5_ticks > open_5_ticks:
+    if close_15_ticks > open_15_ticks:
         return "Buy", None
     
     # Check for a SELL signal (Downward trend)
-    elif close_5_ticks < open_5_ticks:
+    elif close_15_ticks < open_15_ticks:
         return "Sell", None
     
     else:
@@ -102,9 +102,8 @@ if "current_balance" not in st.session_state:
     st.session_state.current_balance = None
 if "balance_check_needed" not in st.session_state:
     st.session_state.balance_check_needed = True
-# --- NEW: Store account currency ---
 if "account_currency" not in st.session_state:
-    st.session_state.account_currency = "USD" # Default to USD
+    st.session_state.account_currency = "USD"
 
 # --- Display UI and handle user input ---
 st.header("KHOURYBOT - The Simple Trader 🤖")
@@ -164,7 +163,6 @@ if state.bot_running:
             state.bot_running = False
             st.rerun()
         else:
-            # --- NEW: Get and store currency ---
             state.account_currency = auth_response.get('authorize', {}).get('currency')
             
             if state.initial_balance is None:
@@ -189,7 +187,7 @@ if state.bot_running:
                 timer_placeholder.metric("Time until next analysis", f"{seconds_to_wait}s")
                 
                 if seconds_to_wait <= 2:
-                    req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
+                    req = {"ticks_history": "R_100", "end": "latest", "count": 15, "style": "ticks"}
                     ws.send(json.dumps(req))
                     tick_data = json.loads(ws.recv())
                     
@@ -206,11 +204,9 @@ if state.bot_running:
                                 "amount": round(st.session_state.current_amount, 2),
                                 "basis": "stake",
                                 "contract_type": contract_type,
-                                # --- MODIFIED PART: Use dynamic currency ---
                                 "currency": state.account_currency,
-                                # --- END OF MODIFIED PART ---
-                                "duration": 10,  
-                                "duration_unit": "t",
+                                "duration": 15,  # MODIFIED: Duration in ticks
+                                "duration_unit": "s",  # MODIFIED: Duration unit is ticks
                                 "symbol": "R_100"
                             }
                             
@@ -229,7 +225,7 @@ if state.bot_running:
             elif state.is_trade_open:
                 status_placeholder.info(f"**Bot Status:** Waiting for trade result...")
                 timer_placeholder.empty()
-                if (datetime.now() - state.trade_start_time).total_seconds() >= 20:
+                if (datetime.now() - state.trade_start_time).total_seconds() >= 20: # MODIFIED: Wait 20 seconds for result
                     contract_info = check_contract_status(ws, state.contract_id)
                     if contract_info and contract_info.get('is_sold'):
                         profit = contract_info.get('profit', 0)
