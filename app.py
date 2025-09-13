@@ -5,7 +5,7 @@ from datetime import datetime
 import os
 
 # --- Database Connection Details ---
-DB_URI = "postgresql://bestan_user:gTJKgsCRwEu9ijNMD9d3IMxFcW5TAdE0@dpg-d329ao2dbo4c73a92kng-a.oregon-postgres.render.com/bestan" 
+DB_URI = "postgresql://ihom_user:M0AybLPpyZl4a4QDdAEHB7dsrXZ9GEUq@dpg-d32mngqdbo4c73aiu4v0-a.oregon-postgres.render.com/ihom" 
 
 # --- Session State ---
 if "user_email" not in st.session_state:
@@ -125,7 +125,6 @@ def show_bot_settings():
     st.title("KHOURYBOT - Bot Settings")
     st.write(f"Welcome, {st.session_state.user_email}!")
     st.write("Please enter your bot settings to start a new session.")
-
     user_token = st.text_input("Enter your Deriv API token:", type="password")
     base_amount = st.number_input("Base Amount ($)", min_value=0.5, step=0.5, value=0.5)
     tp_target = st.number_input("Take Profit Target ($)", min_value=1.0, step=1.0, value=10.0)
@@ -158,7 +157,6 @@ def show_bot_stats(stats):
             st.success("Bot has been stopped.")
             st.rerun()
     with col2:
-        st.write("")  # Empty space for alignment
         if st.button("Refresh Now"):
             st.session_state.refresh_counter += 1
             st.rerun()
@@ -173,15 +171,15 @@ def show_bot_stats(stats):
     st.metric(
         "Current Profit/Loss",
         f"{profit:.2f} USD",
-        delta=0, # No delta calculation needed here, just show the value
+        delta=round(profit, 2),
         delta_color="normal"
     )
-
+    
     st.markdown(f"**Wins:** {stats['total_wins']} | **Losses:** {stats['total_losses']} | **Consecutive Losses:** {stats['consecutive_losses']}")
     st.info(f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
     
-    # Auto-refresh logic every few seconds
-    time.sleep(5)
+    # Auto-refresh logic every 1 second
+    time.sleep(1)
     st.session_state.refresh_counter += 1
     st.rerun()
 
