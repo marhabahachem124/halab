@@ -174,7 +174,8 @@ def analyse_data(df_ticks):
         return "Neutral", "No clear signal."
 
 def place_order(ws, proposal_id, amount):
-    req = {"buy": proposal_id, "price": round(max(0.5, amount), 2)}
+    amount_float = float(amount)
+    req = {"buy": proposal_id, "price": round(max(0.5, amount_float), 2)}
     try:
         ws.send(json.dumps(req))
         response = json.loads(ws.recv()) 
@@ -261,7 +262,7 @@ def run_trading_job_for_user(session_data):
                     contract_type = "CALL" if signal == 'Buy' else "PUT"
                     proposal_req = {
                         "proposal": 1,
-                        "amount": round(current_amount, 2),
+                        "amount": float(current_amount),
                         "basis": "stake",
                         "contract_type": contract_type,
                         "currency": currency,
@@ -274,7 +275,7 @@ def run_trading_job_for_user(session_data):
                     
                     if 'proposal' in proposal_response:
                         proposal_id = proposal_response['proposal']['id']
-                        order_response = place_order(ws, proposal_id, current_amount)
+                        order_response = place_order(ws, proposal_id, float(current_amount))
                         if 'buy' in order_response and 'contract_id' in order_response['buy']:
                             contract_id = order_response['buy']['contract_id']
                             update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
@@ -348,8 +349,8 @@ if not st.session_state.logged_in:
 if st.session_state.logged_in:
     st.markdown("---")
     st.subheader(f"مرحباً بك، {st.session_state.user_email}")
-    st.write("الآن يمكنك إدخال إعدادات البوت والتحكم به.")
     
+    # Form for settings and buttons is now always visible after login
     with st.form("settings_form"):
         user_token = st.text_input("Deriv API Token", type="password")
         base_amount = st.number_input("مقدار الرهان الأساسي", min_value=0.5, value=0.5, step=0.1)
@@ -392,7 +393,6 @@ if st.session_state.logged_in:
     if stats_data:
         st.session_state.stats = stats_data
     
-    # Rerender stats every 2 seconds
     if st.session_state.stats:
         with stats_placeholder.container():
             stats = st.session_state.stats
