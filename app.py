@@ -15,11 +15,12 @@ DB_URI = os.environ.get("DATABASE_URL", "postgresql://charboul_user:Nri3ODg6M9mD
 def is_user_active(email):
     """Checks if a user's email exists in the user_ids.txt file."""
     try:
+        # Ensure user_ids.txt exists in the same directory as the script
         with open("user_ids.txt", "r") as file:
             active_users = [line.strip() for line in file.readlines()]
             return email in active_users
     except FileNotFoundError:
-        st.error("❌ Error: 'user_ids.txt' file not found.")
+        st.error("❌ Error: 'user_ids.txt' file not found in the same directory as the script.")
         return False
     except Exception as e:
         st.error(f"❌ An error occurred while reading 'user_ids.txt': {e}")
@@ -201,7 +202,6 @@ def check_contract_status(ws, contract_id):
 def run_trading_job_for_user(session_data):
     try:
         email, user_token, base_amount, tp_target, max_consecutive_losses, total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id = session_data
-
         ws = None
         try:
             ws = websocket.WebSocket()
@@ -296,8 +296,11 @@ def run_trading_job_for_user(session_data):
             ws.close()
 
 def bot_loop():
+    # This loop is in a separate thread and relies on st.session_state.is_bot_running
+    # Ensure is_bot_running is initialized before this thread starts.
     while True:
-        if st.session_state.is_bot_running:
+        # Check if the key exists before accessing it
+        if "is_bot_running" in st.session_state and st.session_state.is_bot_running:
             now = datetime.now()
             if now.second >= 58:
                 active_sessions = get_all_active_sessions()
@@ -313,91 +316,118 @@ def bot_loop():
 # --- Streamlit App ---
 st.set_page_config(page_title="Hadi Binary Bot", layout="wide")
 
-st.title("Hadi Binary Bot Interface")
-
+# --- Initialize Session State ---
+# IMPORTANT: Initialize all session state variables FIRST
 if "is_bot_running" not in st.session_state:
     st.session_state.is_bot_running = False
 if "stats" not in st.session_state:
     st.session_state.stats = None
-
-st.markdown("---")
-st.subheader("إعدادات البوت")
-
-with st.form("settings_form"):
-    email = st.text_input("البريد الإلكتروني", "your_email@example.com")
-    user_token = st.text_input("Deriv API Token", type="password")
-    base_amount = st.number_input("مقدار الرهان الأساسي", min_value=0.5, value=0.5, step=0.1)
-    tp_target = st.number_input("هدف الربح (Take Profit)", min_value=10.0, value=20.0, step=5.0)
-    max_consecutive_losses = st.number_input("الخسائر المتتالية القصوى", min_value=1, value=5, step=1)
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        start_button = st.form_submit_button("تشغيل البوت")
-    with col2:
-        stop_button = st.form_submit_button("إيقاف البوت")
-
-if start_button:
-    if not user_token:
-        st.error("رجاءً أدخل الـ Deriv API Token لتشغيل البوت.")
-    else:
-        settings = {
-            "user_token": user_token,
-            "base_amount": base_amount,
-            "tp_target": tp_target,
-            "max_consecutive_losses": max_consecutive_losses
-        }
-        success = start_new_session_in_db(email, settings)
-        if success:
-            st.session_state.is_bot_running = True
-            st.success("✅ تم تشغيل البوت بنجاح! يرجى الانتظار لتحديث الإحصائيات.")
-        else:
-            # The error message is handled inside start_new_session_in_db
-            pass
-
-if stop_button:
-    clear_session_data(email)
-    st.session_state.is_bot_running = False
-    st.info("⏸️ تم إيقاف البوت.")
-    st.session_state.stats = None
-
-st.markdown("---")
-st.subheader("الإحصائيات")
-
-stats_placeholder = st.empty()
-
-if st.session_state.is_bot_running:
-    stats_data = get_session_status_from_db(email)
-    if stats_data:
-        st.session_state.stats = stats_data
-        st.success("✅ البوت قيد التشغيل")
-    else:
-        st.warning("🔄 جارٍ الاتصال بالبوت... يرجى الانتظار.")
-else:
-    st.info("البوت متوقف حالياً.")
-
-if st.session_state.stats:
-    with stats_placeholder.container():
-        stats = st.session_state.stats
-        col1, col2, col3, col4, col5 = st.columns(5)
-        with col1:
-            st.metric(label="إجمالي الأرباح", value=f"${stats['current_amount']:.2f}")
-        with col2:
-            st.metric(label="الربح المستهدف", value=f"${stats['tp_target']:.2f}")
-        with col3:
-            st.metric(label="إجمالي الصفقات الرابحة", value=stats['total_wins'])
-        with col4:
-            st.metric(label="إجمالي الصفقات الخاسرة", value=stats['total_losses'])
-        with col5:
-            st.metric(label="الخسائر المتتالية", value=stats['consecutive_losses'])
-        
-        if stats['contract_id']:
-            st.warning("⚠️ هناك صفقة قيد الانتظار. سيتم تحديث الإحصائيات عند انتهائها.")
-
-# Ensure the bot loop runs in a background thread
+if "user_authenticated" not in st.session_state:
+    st.session_state.user_authenticated = False
 if "bot_thread_started" not in st.session_state:
     st.session_state.bot_thread_started = False
 
-if not st.session_state.bot_thread_started:
+st.title("Hadi Binary Bot Interface")
+
+# --- Authentication Section ---
+if not st.session_state.user_authenticated:
+    st.subheader("تسجيل الدخول")
+    with st.form("login_form"):
+        login_email = st.text_input("البريد الإلكتروني", "your_email@example.com", key="login_email")
+        login_button = st.form_submit_button("تسجيل الدخول")
+
+    if login_button:
+        if is_user_active(login_email):
+            st.session_state.user_authenticated = True
+            st.session_state.email = login_email # Store email for later use
+            st.success(f"✅ تم تسجيل الدخول بنجاح كـ {login_email}!")
+            # Automatically refresh the page to show the settings section
+            st.experimental_rerun()
+        else:
+            st.error("❌ البريد الإلكتروني غير مفعّل. يرجى التأكد من إضافته في ملف user_ids.txt.")
+else:
+    # --- Settings Section (Only shown after successful login) ---
+    st.subheader(f"الإعدادات للمستخدم: {st.session_state.email}")
+    
+    with st.form("settings_form"):
+        # Pre-fill email from authenticated session
+        current_email = st.session_state.email
+        
+        user_token = st.text_input("Deriv API Token", type="password", key="user_token_input")
+        base_amount = st.number_input("مقدار الرهان الأساسي", min_value=0.5, value=0.5, step=0.1, key="base_amount_input")
+        tp_target = st.number_input("هدف الربح (Take Profit)", min_value=10.0, value=20.0, step=5.0, key="tp_target_input")
+        max_consecutive_losses = st.number_input("الخسائر المتتالية القصوى", min_value=1, value=5, step=1, key="max_consecutive_losses_input")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            start_button = st.form_submit_button("تشغيل البوت")
+        with col2:
+            stop_button = st.form_submit_button("إيقاف البوت")
+
+    if start_button:
+        if not user_token:
+            st.error("رجاءً أدخل الـ Deriv API Token لتشغيل البوت.")
+        else:
+            settings = {
+                "user_token": user_token,
+                "base_amount": base_amount,
+                "tp_target": tp_target,
+                "max_consecutive_losses": max_consecutive_losses
+            }
+            # Pass the authenticated email to the db function
+            success = start_new_session_in_db(current_email, settings)
+            if success:
+                st.session_state.is_bot_running = True
+                st.success("✅ تم تشغيل البوت بنجاح! يرجى الانتظار لتحديث الإحصائيات.")
+            else:
+                # Error message is handled inside start_new_session_in_db
+                pass
+
+    if stop_button:
+        clear_session_data(current_email)
+        st.session_state.is_bot_running = False
+        st.info("⏸️ تم إيقاف البوت.")
+        st.session_state.stats = None
+
+    st.markdown("---")
+    st.subheader("الإحصائيات")
+
+    stats_placeholder = st.empty()
+
+    if st.session_state.is_bot_running:
+        # Retrieve stats for the currently logged-in user
+        stats_data = get_session_status_from_db(st.session_state.email)
+        if stats_data:
+            st.session_state.stats = stats_data
+            st.success("✅ البوت قيد التشغيل")
+        else:
+            st.warning("🔄 جارٍ الاتصال بالبوت... يرجى الانتظار.")
+    else:
+        st.info("البوت متوقف حالياً.")
+
+    if st.session_state.stats:
+        with stats_placeholder.container():
+            stats = st.session_state.stats
+            col1, col2, col3, col4, col5 = st.columns(5)
+            with col1:
+                st.metric(label="إجمالي الأرباح", value=f"${stats['current_amount']:.2f}")
+            with col2:
+                st.metric(label="الربح المستهدف", value=f"${stats['tp_target']:.2f}")
+            with col3:
+                st.metric(label="إجمالي الصفقات الرابحة", value=stats['total_wins'])
+            with col4:
+                st.metric(label="إجمالي الصفقات الخاسرة", value=stats['total_losses'])
+            with col5:
+                st.metric(label="الخسائر المتتالية", value=stats['consecutive_losses'])
+            
+            if stats['contract_id']:
+                st.warning("⚠️ هناك صفقة قيد الانتظار. سيتم تحديث الإحصائيات عند انتهائها.")
+
+
+# --- Background Bot Thread ---
+# Ensure the bot loop runs in a background thread, but only after user is authenticated and thread is not already started
+if st.session_state.user_authenticated and not st.session_state.bot_thread_started:
+    # This check ensures the thread is created only once after authentication
     bot_thread = threading.Thread(target=bot_loop)
     bot_thread.daemon = True
     bot_thread.start()
