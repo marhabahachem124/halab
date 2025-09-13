@@ -93,37 +93,47 @@ def get_session_status_from_db(email):
 def get_all_active_sessions():
     conn = get_db_connection()
     if conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT email, user_token, base_amount, tp_target, max_consecutive_losses, total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id FROM user_settings;")
-            active_sessions = cur.fetchall()
-            conn.close()
-            return active_sessions
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT email, user_token, base_amount, tp_target, max_consecutive_losses, total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id FROM user_settings;")
+                active_sessions = cur.fetchall()
+                conn.close()
+                return active_sessions
+        except Exception as e:
+            print(f"❌ An error occurred while fetching active sessions: {e}")
+            return []
     return []
 
 def update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=None, contract_id=None):
     conn = get_db_connection()
     if conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE user_settings
-                SET total_wins = %s,
-                    total_losses = %s,
-                    current_amount = %s,
-                    consecutive_losses = %s,
-                    initial_balance = COALESCE(%s, initial_balance),
-                    contract_id = %s
-                WHERE email = %s
-            """, (total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id, email))
-            conn.commit()
-            conn.close()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE user_settings
+                    SET total_wins = %s,
+                        total_losses = %s,
+                        current_amount = %s,
+                        consecutive_losses = %s,
+                        initial_balance = COALESCE(%s, initial_balance),
+                        contract_id = %s
+                    WHERE email = %s
+                """, (total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id, email))
+                conn.commit()
+                conn.close()
+        except Exception as e:
+            print(f"❌ An error occurred while updating database for {email}: {e}")
 
 def clear_session_data(email):
     conn = get_db_connection()
     if conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM user_settings WHERE email = %s", (email,))
-            conn.commit()
-            conn.close()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM user_settings WHERE email = %s", (email,))
+                conn.commit()
+                conn.close()
+        except Exception as e:
+            print(f"❌ An error occurred while clearing session data for {email}: {e}")
 
 # --- Trading Bot Logic ---
 def get_balance_and_currency(ws):
@@ -135,20 +145,16 @@ def get_balance_and_currency(ws):
             balance_info = response.get('balance', {})
             return balance_info.get('balance'), balance_info.get('currency')
         return None, None
-    except Exception:
+    except Exception as e:
+        print(f"❌ Error getting balance: {e}")
         return None, None
             
 def analyse_data(df_ticks):
-    print(f"🔍 Analyzing {len(df_ticks)} ticks...")
     if len(df_ticks) < 5:
-        print("❌ Analysis failed: Insufficient data. Need 5 ticks.")
         return "Neutral", "Insufficient data."
     last_5_ticks = df_ticks.tail(5).copy()
     open_5_ticks = last_5_ticks['price'].iloc[0]
     close_5_ticks = last_5_ticks['price'].iloc[-1]
-    
-    print(f"📊 5-Tick Analysis: Open={open_5_ticks}, Close={close_5_ticks}")
-    
     if close_5_ticks > open_5_ticks:
         return "Buy", None
     elif close_5_ticks < open_5_ticks:
@@ -162,7 +168,8 @@ def place_order(ws, proposal_id, amount):
         ws.send(json.dumps(req))
         response = json.loads(ws.recv()) 
         return response
-    except Exception:
+    except Exception as e:
+        print(f"❌ Error placing order: {e}")
         return {"error": {"message": "Order placement failed."}}
 
 def check_contract_status(ws, contract_id):
@@ -171,27 +178,34 @@ def check_contract_status(ws, contract_id):
         ws.send(json.dumps(req))
         response = json.loads(ws.recv()) 
         return response.get('proposal_open_contract')
-    except Exception:
+    except Exception as e:
+        print(f"❌ Error checking contract status: {e}")
         return None
 
 def run_trading_job_for_user(session_data):
     try:
         email, user_token, base_amount, tp_target, max_consecutive_losses, total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id = session_data
 
-        print(f"🔄 Processing session for {email}...")
+        print(f"🔄 **STARTING JOB FOR** {email}...")
 
-        ws = websocket.WebSocket()
-        ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
-        auth_req = {"authorize": user_token}
-        ws.send(json.dumps(auth_req))
-        auth_response = json.loads(ws.recv())
-        print(f"✅ Authorization response for {email}: {auth_response.get('msg_type')}")
+        ws = None
+        try:
+            print("🚀 Attempting to connect to Deriv...")
+            ws = websocket.WebSocket()
+            ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
+            auth_req = {"authorize": user_token}
+            ws.send(json.dumps(auth_req))
+            auth_response = json.loads(ws.recv())
+            print(f"✅ Authorization response for {email}: {auth_response.get('msg_type')}")
 
-        if auth_response.get('error'):
-            print(f"❌ Auth failed for {email}: {auth_response['error']['message']}")
-            clear_session_data(email)
-            return
-        
+            if auth_response.get('error'):
+                print(f"❌ Auth failed for {email}: {auth_response['error']['message']}")
+                clear_session_data(email)
+                return
+        except Exception as e:
+            print(f"❌ Connection or Authorization Failed for {email}: {e}")
+            return # Stop the job for this user if connection fails
+
         balance, currency = get_balance_and_currency(ws)
         if initial_balance is None or initial_balance == 0:
             initial_balance = balance
@@ -234,17 +248,15 @@ def run_trading_job_for_user(session_data):
             req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
             ws.send(json.dumps(req))
             
-            # --- هذا هو التعديل الجديد والمهم ---
             tick_data = None
             while not tick_data:
                 response = json.loads(ws.recv())
                 if response.get('msg_type') == 'history':
                     tick_data = response
-                elif response.get('msg_type') != 'tick': # نتجاهل التيكس المباشرة
+                elif response.get('msg_type') != 'tick':
                     print(f"ℹ️ Received non-history message: {response.get('msg_type')}. Waiting for 'history'...")
-            # --- نهاية التعديل ---
             
-            print(f"📈 Raw ticks data received: {tick_data}")
+            print(f"📈 Raw ticks data received. Content size: {len(str(tick_data))}")
             
             if 'history' in tick_data and 'prices' in tick_data['history']:
                 ticks = tick_data['history']['prices']
@@ -284,26 +296,32 @@ def run_trading_job_for_user(session_data):
             else:
                 print("❌ Failed to get ticks history or ticks data is empty.")
     except Exception as e:
-        print(f"\n❌ An error occurred in trading job for {email}: {e}")
+        print(f"\n❌ An unhandled error occurred in trading job for {email}: {e}")
     finally:
-        if 'ws' in locals() and ws.connected:
+        if ws and ws.connected:
             ws.close()
+            print(f"🔗 Websocket connection closed for {email}.")
 
 def bot_loop():
     while True:
-        now = datetime.now()
-        if now.second >= 58:
-            print(f"⏰ It's {now.strftime('%H:%M:%S')}, checking for active sessions...")
-            active_sessions = get_all_active_sessions()
-            print(f"📋 Found {len(active_sessions)} active session(s).")
-            if active_sessions:
-                for session in active_sessions:
-                    run_trading_job_for_user(session)
+        try:
+            now = datetime.now()
+            if now.second >= 58:
+                print(f"⏰ It's {now.strftime('%H:%M:%S')}, checking for active sessions...")
+                active_sessions = get_all_active_sessions()
+                print(f"📋 Found {len(active_sessions)} active session(s).")
+                if active_sessions:
+                    for session in active_sessions:
+                        run_trading_job_for_user(session)
+                else:
+                    print("😴 No active sessions found. Sleeping for 1 second...")
+                time.sleep(1)
             else:
-                print("😴 No active sessions found. Sleeping for 1 second...")
-            time.sleep(1)
-        else:
-            time.sleep(0.1)
+                time.sleep(0.1)
+        except Exception as e:
+            print(f"❌ An error occurred in the main bot loop: {e}")
+            # This is a critical failure. Wait and then try to continue.
+            time.sleep(5)
 
 # --- Flask Endpoints for Streamlit communication ---
 @app.route('/start_bot', methods=['POST'])
