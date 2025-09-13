@@ -147,13 +147,13 @@ def clear_session_data(email):
             print(f"❌ حدث خطأ أثناء إيقاف الجلسة للمستخدم {email}: {e}")
 
 # --- Trading Bot Logic ---
-def get_balance_and_currency_ws(ws): # Renamed to avoid conflict with main function get_balance_and_currency
-    balance_req = {"balance": 1, "subscribe": 1}
+def get_balance_and_currency_ws(ws): # Renamed to avoid conflict with previous standalone function
     try:
+        balance_req = {"balance": 1, "subscribe": 1}
         ws.send(json.dumps(balance_req))
-        response = json.loads(ws.recv())
-        if response.get('msg_type') == 'balance':
-            balance_info = response.get('balance', {})
+        balance_response = json.loads(ws.recv())
+        if balance_response.get('msg_type') == 'balance':
+            balance_info = balance_response.get('balance', {})
             return balance_info.get('balance'), balance_info.get('currency')
         return None, None
     except Exception as e:
@@ -213,18 +213,13 @@ def run_trading_job_for_user(session_data):
             print(f"❌ فشل الاتصال أو المصادقة للمستخدم {email}: {e}")
             return
 
-        balance, currency = get_balance_and_currency_ws(ws)
-        if balance is None: # If balance fetch failed, stop this job
-            print(f"❌ تعذر جلب الرصيد للمستخدم {email}, إيقاف المهمة.")
-            return
-
+        balance, currency = get_balance_and_currency_ws(ws) # Corrected to use ws function
         if initial_balance is None or initial_balance == 0:
             initial_balance = balance
             update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
         
         if contract_id:
-            # Wait for 20 seconds before checking result to ensure trade is over
-            time.sleep(20)
+            time.sleep(20) # Wait for 20 seconds before checking result
             contract_info = check_contract_status(ws, contract_id)
             if contract_info and contract_info.get('is_sold'):
                 profit = contract_info.get('profit', 0)
@@ -327,7 +322,7 @@ if "stats" not in st.session_state:
     st.session_state.stats = None
 if "bot_thread_started" not in st.session_state:
     st.session_state.bot_thread_started = False
-if "bot_running" not in st.session_state: # New state to control refresh
+if "bot_running" not in st.session_state: # New state to control auto-refresh
     st.session_state.bot_running = False
 
 # Ensure the bot loop runs in a background thread
@@ -363,10 +358,10 @@ if st.session_state.logged_in:
 
     # Check if an active session exists
     if st.session_state.stats and st.session_state.stats.get("contract_id") is not None:
-        st.session_state.bot_running = True # Set bot running state for refresh
         st.info("⚠️ البوت قيد التشغيل حالياً. يمكنك مراقبة الإحصائيات أو إيقافه.")
+        st.session_state.bot_running = True # Set bot_running to True when bot is active
         
-        # Display stop button for active session
+        # Display stats and stop button for active session
         with st.form("stop_form"):
             stop_button = st.form_submit_button("إيقاف البوت")
         
@@ -374,11 +369,11 @@ if st.session_state.logged_in:
             clear_session_data(st.session_state.user_email)
             st.info("⏸️ تم إيقاف البوت.")
             st.session_state.stats = None
-            st.session_state.bot_running = False # Reset bot running state
+            st.session_state.bot_running = False # Set bot_running to False when stopping
             st.rerun()
     elif st.session_state.stats:
-        st.session_state.bot_running = False # Ensure bot running state is false when stopped
         st.info("⏸️ البوت متوقف حالياً. يمكنك تشغيله مرة أخرى.")
+        st.session_state.bot_running = False # Ensure bot_running is False when stopped
         # Display settings form and start button for inactive session
         with st.form("settings_form"):
             user_token = st.text_input("Deriv API Token", type="password", value=st.session_state.stats['user_token'])
@@ -399,14 +394,13 @@ if st.session_state.logged_in:
                 }
                 success = start_new_session_in_db(st.session_state.user_email, settings)
                 if success:
-                    st.success("✅ تم تشغيل البوت بنجاح! سيتم تحديث الإحصائيات تلقائياً.")
-                    st.session_state.bot_running = True # Set bot running state for refresh
-                    st.rerun()
+                    st.success("✅ تم تشغيل البوت بنجاح! يرجى تحديث الصفحة لمشاهدة الإحصائيات.")
+                    st.session_state.bot_running = True # Set bot_running to True on successful start
                 else:
                     st.error("❌ فشل تشغيل البوت. يرجى مراجعة السجلات.")
     else:
         # Display settings form for brand new session
-        st.session_state.bot_running = False # Ensure bot running state is false when stopped
+        st.session_state.bot_running = False # Ensure bot_running is False for new sessions
         with st.form("settings_form"):
             user_token = st.text_input("Deriv API Token", type="password")
             base_amount = st.number_input("مقدار الرهان الأساسي", min_value=0.5, value=0.5, step=0.1)
@@ -426,9 +420,8 @@ if st.session_state.logged_in:
                 }
                 success = start_new_session_in_db(st.session_state.user_email, settings)
                 if success:
-                    st.success("✅ تم تشغيل البوت بنجاح! سيتم تحديث الإحصائيات تلقائياً.")
-                    st.session_state.bot_running = True # Set bot running state for refresh
-                    st.rerun()
+                    st.success("✅ تم تشغيل البوت بنجاح! يرجى تحديث الصفحة لمشاهدة الإحصائيات.")
+                    st.session_state.bot_running = True # Set bot_running to True on successful start
                 else:
                     st.error("❌ فشل تشغيل البوت. يرجى مراجعة السجلات.")
     
@@ -437,12 +430,12 @@ if st.session_state.logged_in:
 
     stats_placeholder = st.empty()
     
-    # Fetch and display balance
+    # Fetch balance only if user is logged in and session data is available
     if st.session_state.user_email:
         session_data = get_session_status_from_db(st.session_state.user_email)
         if session_data:
             user_token = session_data['user_token']
-            balance, _ = get_balance_and_currency(user_token) # Using the standalone function here
+            balance, _ = get_balance_and_currency(user_token) # Using the corrected standalone function
             if balance is not None:
                 st.metric(label="الرصيد الحالي", value=f"${balance:.2f}")
 
@@ -468,7 +461,8 @@ if st.session_state.logged_in:
              st.info("البوت متوقف حالياً.")
              
     # --- Auto-refresh logic ---
-    # This will cause the script to rerun every second if the bot is running
     if st.session_state.get("bot_running"):
-        time.sleep(1) 
+        # This will cause the script to re-run every 10 seconds
+        # If you want it to refresh every 1 second, change 10 to 1, but be aware of performance impact.
+        time.sleep(10) 
         st.experimental_rerun()
