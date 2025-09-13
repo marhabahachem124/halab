@@ -7,7 +7,7 @@ from datetime import datetime
 import psycopg2
 import os
 import threading
-from decimal import Decimal, ROUND_HALF_UP
+import decimal
 
 # --- Database Connection Details ---
 DB_URI = os.environ.get("DATABASE_URL", "postgresql://charboul_user:Nri3ODg6M9mDFu1kK71ru69FiAmKSNtY@dpg-d32peaqdbo4c73alceog-a.oregon-postgres.render.com/charboul")
@@ -92,6 +92,7 @@ def get_session_status_from_db(email):
             result = cur.fetchone()
             conn.close()
             if result:
+                # Convert Decimal types to float for calculations
                 return {
                     "user_token": result[0],
                     "base_amount": float(result[1]),
@@ -159,8 +160,7 @@ def connect_websocket(user_token):
     """Establishes a WebSocket connection and authenticates the user."""
     ws = websocket.WebSocket()
     try:
-        # Increased timeout for stability if needed, but default is usually fine.
-        ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10) 
+        ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929")
         auth_req = {"authorize": user_token}
         ws.send(json.dumps(auth_req))
         auth_response = json.loads(ws.recv())
@@ -188,8 +188,7 @@ def get_balance_and_currency(user_token):
         
         if balance_response.get('msg_type') == 'balance':
             balance_info = balance_response.get('balance', {})
-            # Ensure balance and currency are treated as floats for calculations
-            return float(balance_info.get('balance', 0)), balance_info.get('currency')
+            return balance_info.get('balance'), balance_info.get('currency')
         return None, None
     except Exception as e:
         print(f"❌ Error fetching balance: {e}")
@@ -211,20 +210,15 @@ def check_contract_status(ws, contract_id):
         print(f"❌ Error checking contract status: {e}")
         return None
 
-def place_order(ws, proposal_id, amount_to_stake, currency):
-    """Places a trade order on Deriv, ensuring amount has correct decimal places."""
+def place_order(ws, proposal_id, amount):
+    """Places a trade order on Deriv."""
     if not ws or not ws.connected:
         return {"error": {"message": "WebSocket not connected."}}
     
-    # Ensure amount_to_stake is a Decimal for precise rounding
-    amount_decimal = Decimal(str(amount_to_stake))
+    # Use Decimal for accurate rounding before sending
+    amount_decimal = decimal.Decimal(str(amount)).quantize(decimal.Decimal('0.01'), rounding=decimal.ROUND_HALF_UP)
     
-    # Round to 2 decimal places for stake amount
-    # Use ROUND_HALF_UP for standard rounding
-    rounded_amount = amount_decimal.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-    
-    req = {"buy": proposal_id, "price": float(rounded_amount)} # Convert back to float for API
-    
+    req = {"buy": proposal_id, "price": float(amount_decimal)}
     try:
         ws.send(json.dumps(req))
         response = json.loads(ws.recv()) 
@@ -252,86 +246,62 @@ def run_trading_job_for_user(session_data):
     """Executes the trading logic for a specific user's session."""
     email, user_token, base_amount, tp_target, max_consecutive_losses, total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id = session_data
 
-    # --- Get current balance before placing any new trade ---
+    # --- Get current balance before any new trade ---
     balance, currency = get_balance_and_currency(user_token)
     if balance is None:
         print(f"❌ Failed to fetch balance for user {email}. Skipping trade job.")
         return
 
-    # Initialize initial_balance if it's the first run or zero
-    if initial_balance == 0 or initial_balance is None:
+    if initial_balance == 0:
         initial_balance = float(balance)
         update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
 
     # --- Process an existing contract if one is pending ---
     if contract_id:
-        print(f"User {email}: Found pending contract {contract_id}. Waiting 25 seconds to check result...")
-        time.sleep(25)
-        
-        # Get new balance to determine trade outcome
-        new_balance, _ = get_balance_and_currency(user_token)
-        if new_balance is None:
-            print(f"❌ User {email}: Failed to get new balance. Cannot determine trade result. Will retry next cycle.")
-            return
+        ws = None
+        try:
+            ws = connect_websocket(user_token)
+            if not ws:
+                return
 
-        # Determine win/loss based on balance change
-        # Use Decimal for precise comparison to avoid float issues
-        initial_balance_decimal = Decimal(str(balance)) # Balance BEFORE the trade execution
-        new_balance_decimal = Decimal(str(new_balance))
+            print(f"User {email}: Found pending contract {contract_id}. Waiting 25 seconds to check status...")
+            time.sleep(25)
+            
+            contract_info = check_contract_status(ws, contract_id)
+            if contract_info and contract_info.get('is_sold'):
+                profit = float(contract_info.get('profit', 0))
+                
+                if profit > 0:
+                    print(f"🎉 User {email}: Trade won! Profit: ${profit:.2f}")
+                    consecutive_losses = 0
+                    total_wins += 1
+                    current_amount = base_amount
+                else:
+                    print(f"🔴 User {email}: Trade lost. Loss: ${profit:.2f}")
+                    consecutive_losses += 1
+                    total_losses += 1
+                    next_bet = current_amount * 2.2
+                    current_amount = max(base_amount, next_bet)
+                
+                contract_id = None
+                update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
 
-        # Assuming 'balance' here is the balance *before* the contract was placed.
-        # This logic relies on fetching the balance *before* the trade in the previous cycle.
-        # A more robust way is to store the balance when the trade was INITIATED.
-        # For now, we'll assume 'balance' is the relevant 'previous' balance for comparison.
-        
-        # Let's fetch balance again to be sure it's the balance *right before* this check.
-        # However, the logic `if contract_id:` implies the trade was already placed.
-        # The critical part is comparing the balance *after* the trade to the balance *before* the trade was placed.
-        # The current `balance` variable holds the balance from the start of this `run_trading_job_for_user` execution.
-
-        # If the bot gets here, it means `contract_id` was set in a previous run.
-        # We need to know the balance *at the time of placing that contract*.
-        # For now, we use the `balance` fetched at the start of *this* function call
-        # and compare it to the `new_balance` fetched after the sleep.
-        # This is a potential point of error if many trades happen quickly without proper tracking.
-
-        # Re-fetch balance *right before* making decision
-        balance_before_decision, _ = get_balance_and_currency(user_token)
-        if balance_before_decision is None:
-             print(f"❌ User {email}: Failed to get balance before decision. Skipping outcome determination.")
-             return
-
-        balance_before_decision_decimal = Decimal(str(balance_before_decision))
-        new_balance_decimal = Decimal(str(new_balance)) # This is the balance *after* the 25s wait
-
-        if new_balance_decimal > balance_before_decision_decimal:
-            print(f"🎉 User {email}: Trade won! Balance increased.")
-            consecutive_losses = 0
-            total_wins += 1
-            current_amount = base_amount
-        else:
-            print(f"🔴 User {email}: Trade lost or broke even. Balance did not increase.")
-            consecutive_losses += 1
-            total_losses += 1
-            # Use Decimal for next bet calculation to maintain precision
-            next_bet_decimal = Decimal(str(current_amount)) * Decimal("2.2")
-            current_amount = float(max(Decimal(str(base_amount)), next_bet_decimal)) # Ensure current_amount is float
-        
-        # Reset contract_id and update stats
-        contract_id = None
-        update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
-        
-        # Check for TP or Max Loss
-        current_total_balance_decimal = Decimal(str(new_balance)) # New balance after trade
-        if (current_total_balance_decimal - Decimal(str(initial_balance))) >= Decimal(str(tp_target)):
-            print(f"🎉 User {email}: TP target (${tp_target}) reached. Stopping the bot.")
-            clear_session_data(email)
-            return
-        
-        if consecutive_losses >= max_consecutive_losses:
-            print(f"🔴 User {email}: Max consecutive losses ({max_consecutive_losses}) reached. Stopping the bot.")
-            clear_session_data(email)
-            return
+                new_balance, _ = get_balance_and_currency(user_token)
+                if new_balance is not None and (float(new_balance) - float(initial_balance)) >= float(tp_target):
+                    print(f"🎉 User {email}: TP target (${tp_target}) reached. Stopping the bot.")
+                    clear_session_data(email)
+                    return
+                
+                if consecutive_losses >= max_consecutive_losses:
+                    print(f"🔴 User {email}: Max consecutive losses ({max_consecutive_losses}) reached. Stopping the bot.")
+                    clear_session_data(email)
+                    return
+            else:
+                print(f"User {email}: Contract {contract_id} is still pending or not found. Retrying next cycle.")
+        finally:
+            if ws and ws.connected:
+                ws.close()
+                print(f"🔗 WebSocket connection closed for user {email}.")
     
     # --- Place a new trade if no contract is pending ---
     if not contract_id:
@@ -345,33 +315,21 @@ def run_trading_job_for_user(session_data):
             ws.send(json.dumps(req))
             tick_data = None
             while not tick_data:
-                try:
-                    response = json.loads(ws.recv())
-                    if response.get('msg_type') == 'history':
-                        tick_data = response
-                        break
-                except websocket.WebSocketConnectionClosedException:
-                    print(f"WebSocket closed unexpectedly while requesting tick history for user {email}. Reconnecting...")
-                    ws = connect_websocket(user_token)
-                    if ws:
-                        ws.send(json.dumps(req))
-                    else:
-                        print(f"Failed to reconnect WebSocket for user {email}.")
-                        return
+                response = json.loads(ws.recv())
+                if response.get('msg_type') == 'history':
+                    tick_data = response
+                    break
             
-            if tick_data and 'history' in tick_data and 'prices' in tick_data['history']:
+            if 'history' in tick_data and 'prices' in tick_data['history']:
                 ticks = tick_data['history']['prices']
                 df_ticks = pd.DataFrame({'price': ticks})
                 signal, _ = analyse_data(df_ticks)
                 
                 if signal in ['Buy', 'Sell']:
                     contract_type = "CALL" if signal == 'Buy' else "PUT"
-                    # Ensure current_amount for proposal is correctly formatted as float
-                    amount_for_proposal = float(current_amount)
-
                     proposal_req = {
                         "proposal": 1,
-                        "amount": amount_for_proposal, # Use float here for proposal
+                        "amount": float(current_amount),
                         "basis": "stake",
                         "contract_type": contract_type,
                         "currency": currency,
@@ -384,14 +342,11 @@ def run_trading_job_for_user(session_data):
                     
                     if 'proposal' in proposal_response:
                         proposal_id = proposal_response['proposal']['id']
-                        # Pass currency to place_order to ensure correct rounding context
-                        order_response = place_order(ws, proposal_id, amount_for_proposal, currency) 
+                        order_response = place_order(ws, proposal_id, float(current_amount))
                         if 'buy' in order_response and 'contract_id' in order_response['buy']:
                             contract_id = order_response['buy']['contract_id']
-                            # IMPORTANT: Update current_amount to the actual staked amount if it was rounded
-                            # For now, we stick to the calculated current_amount, but actual stake might differ slightly
                             update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
-                            print(f"✅ User {email}: New trade placed successfully. Type: {contract_type}, Amount: {amount_for_proposal:.2f}")
+                            print(f"✅ User {email}: New trade placed successfully. Type: {contract_type}, Amount: {current_amount}")
                         else:
                             print(f"❌ User {email}: Failed to place order. Response: {order_response}")
                     else:
@@ -416,9 +371,9 @@ def bot_loop():
                 if active_sessions:
                     for session in active_sessions:
                         run_trading_job_for_user(session)
-                time.sleep(1) # Wait 1 second to avoid re-executing in the same minute
+                time.sleep(1)
             else:
-                time.sleep(0.1) # Check frequently
+                time.sleep(0.1)
         except Exception as e:
             print(f"❌ An error occurred in the main bot loop: {e}")
             time.sleep(5)
@@ -539,7 +494,7 @@ if st.session_state.logged_in:
             user_token = session_data['user_token']
             balance, _ = get_balance_and_currency(user_token)
             if balance is not None:
-                st.metric(label="Current Balance", value=f"${balance:.2f}")
+                st.metric(label="Current Balance", value=f"${float(balance):.2f}")
 
     if st.session_state.stats:
         with stats_placeholder.container():
