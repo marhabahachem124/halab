@@ -8,7 +8,7 @@ import sys
 import os
 
 # --- Database Connection Details ---
-DB_URI = "postgresql://bestan_user:gTJKgsCRwEu9ijNMD9d3IMxFcW5TAdE0@dpg-d329ao2dbo4c73a92kng-a.oregon-postgres.render.com/bestan" 
+DB_URI = "postgresql://ihom_user:M0AybLPpyZl4a4QDdAEHB7dsrXZ9GEUq@dpg-d32mngqdbo4c73aiu4v0-a.oregon-postgres.render.com/ihom" 
 
 # --- Database Functions ---
 def get_db_connection():
@@ -22,6 +22,7 @@ def get_active_sessions():
     conn = get_db_connection()
     if conn:
         with conn.cursor() as cur:
+            # التأكد من أن أسماء الأعمدة هنا تطابق تمامًا ما في create_table_if_not_exists
             cur.execute("SELECT email, user_token, base_amount, tp_target, max_consecutive_losses, total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id FROM user_settings;")
             active_sessions = cur.fetchall()
             conn.close()
