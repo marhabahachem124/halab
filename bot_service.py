@@ -21,37 +21,51 @@ def get_db_connection():
 def get_active_sessions():
     conn = get_db_connection()
     if conn:
-        with conn.cursor() as cur:
-            # التأكد من أن أسماء الأعمدة هنا تطابق تمامًا ما في create_table_if_not_exists
-            cur.execute("SELECT email, user_token, base_amount, tp_target, max_consecutive_losses, total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id FROM user_settings;")
-            active_sessions = cur.fetchall()
+        try:
+            with conn.cursor() as cur:
+                # Added COALESCE for initial_balance to handle potential NULLs gracefully
+                cur.execute("SELECT email, user_token, base_amount, tp_target, max_consecutive_losses, total_wins, total_losses, current_amount, consecutive_losses, COALESCE(initial_balance, 0.0), contract_id FROM user_settings;")
+                active_sessions = cur.fetchall()
+                return active_sessions
+        except Exception as e:
+            print(f"❌ Error fetching active sessions: {e}")
+            return []
+        finally:
             conn.close()
-            return active_sessions
     return []
 
 def update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=None, contract_id=None):
     conn = get_db_connection()
     if conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE user_settings
-                SET total_wins = %s,
-                    total_losses = %s,
-                    current_amount = %s,
-                    consecutive_losses = %s,
-                    initial_balance = COALESCE(%s, initial_balance),
-                    contract_id = %s
-                WHERE email = %s
-            """, (total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id, email))
-            conn.commit()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE user_settings
+                    SET total_wins = %s,
+                        total_losses = %s,
+                        current_amount = %s,
+                        consecutive_losses = %s,
+                        initial_balance = COALESCE(%s, initial_balance),
+                        contract_id = %s
+                    WHERE email = %s
+                """, (total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id, email))
+                conn.commit()
+        except Exception as e:
+            print(f"❌ Error updating stats for {email}: {e}")
+        finally:
             conn.close()
 
 def clear_session_data(email):
     conn = get_db_connection()
     if conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM user_settings WHERE email = %s", (email,))
-            conn.commit()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM user_settings WHERE email = %s", (email,))
+                conn.commit()
+                print(f"✅ Session data cleared for {email}.")
+        except Exception as e:
+            print(f"❌ Error clearing session data for {email}: {e}")
+        finally:
             conn.close()
 
 # --- Trading Bot Logic ---
@@ -64,7 +78,8 @@ def get_balance_and_currency(ws):
             balance_info = response.get('balance', {})
             return balance_info.get('balance'), balance_info.get('currency')
         return None, None
-    except Exception:
+    except Exception as e:
+        print(f"❌ Error getting balance and currency: {e}")
         return None, None
             
 def analyse_data(df_ticks):
@@ -86,7 +101,8 @@ def place_order(ws, proposal_id, amount):
         ws.send(json.dumps(req))
         response = json.loads(ws.recv()) 
         return response
-    except Exception:
+    except Exception as e:
+        print(f"❌ Order placement failed: {e}")
         return {"error": {"message": "Order placement failed."}}
 
 def check_contract_status(ws, contract_id):
@@ -95,7 +111,8 @@ def check_contract_status(ws, contract_id):
         ws.send(json.dumps(req))
         response = json.loads(ws.recv()) 
         return response.get('proposal_open_contract')
-    except Exception:
+    except Exception as e:
+        print(f"❌ Error checking contract status: {e}")
         return None
 
 def run_trading_job_for_user(session_data):
@@ -114,7 +131,7 @@ def run_trading_job_for_user(session_data):
             return
         
         balance, currency = get_balance_and_currency(ws)
-        if initial_balance is None or initial_balance == 0:
+        if initial_balance == 0: # Use 0 to check if it was ever set
             initial_balance = balance
             update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
         
@@ -137,18 +154,18 @@ def run_trading_job_for_user(session_data):
                 update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
 
                 if (balance - initial_balance) >= tp_target:
-                    print(f"🎉 Take Profit target (${tp_target}) reached. Stopping bot.")
+                    print(f"🎉 Take Profit target (${tp_target}) reached. Stopping bot for {email}.")
                     clear_session_data(email)
                     return
                 
                 if consecutive_losses >= max_consecutive_losses:
-                    print(f"🔴 Maximum consecutive losses ({max_consecutive_losses}) reached. Stopping bot.")
+                    print(f"🔴 Maximum consecutive losses ({max_consecutive_losses}) reached for {email}. Stopping bot.")
                     clear_session_data(email)
                     return
         
         if not contract_id:
             now = datetime.now()
-            if now.second >= 58:
+            if now.second >= 58: # Check for trade placement in the last 2 seconds of the minute
                 req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
                 ws.send(json.dumps(req))
                 tick_data = json.loads(ws.recv())
@@ -176,9 +193,13 @@ def run_trading_job_for_user(session_data):
                             if 'buy' in order_response and 'contract_id' in order_response['buy']:
                                 contract_id = order_response['buy']['contract_id']
                                 update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
-                                print(f"✅ Placed a {contract_type} trade for ${current_amount:.2f}")
+                                print(f"✅ Placed a {contract_type} trade for ${current_amount:.2f} for {email}")
     except Exception as e:
         print(f"\n❌ An error occurred in trading job for {email}: {e}")
+        # Attempt to clear session if connection issues persist, to prevent infinite loop of errors for this user
+        if "connection refused" in str(e).lower() or "timed out" in str(e).lower():
+            print(f"Attempting to clear session for {email} due to connection error.")
+            clear_session_data(email)
     finally:
         if 'ws' in locals() and ws.connected:
             ws.close()
@@ -189,6 +210,7 @@ if __name__ == "__main__":
         active_sessions = get_active_sessions()
         if active_sessions:
             for session in active_sessions:
+                # Pass session data to the function
                 run_trading_job_for_user(session)
         else:
             print("😴 No active sessions found. Sleeping for 10 seconds...")
