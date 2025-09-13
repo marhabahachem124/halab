@@ -6,10 +6,13 @@ from datetime import datetime
 import psycopg2
 import os
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from flask import Flask, request, jsonify
 
 # --- Database Connection Details ---
 DB_URI = "postgresql://ihom_user:M0AybLPpyZl4a4QDdAEHB7dsrXZ9GEUq@dpg-d32mngqdbo4c73aiu4v0-a.oregon-postgres.render.com/ihom"
+
+# --- Flask App Setup ---
+app = Flask(__name__)
 
 # --- Database Functions ---
 def get_db_connection():
@@ -19,7 +22,75 @@ def get_db_connection():
         print(f"❌ Error connecting to database: {e}")
         return None
 
-def get_active_sessions():
+def start_new_session_in_db(email, settings):
+    conn = get_db_connection()
+    if conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS user_settings (
+                        email VARCHAR(255) PRIMARY KEY,
+                        user_token VARCHAR(255),
+                        base_amount NUMERIC(10, 2),
+                        tp_target NUMERIC(10, 2),
+                        max_consecutive_losses INTEGER,
+                        total_wins INTEGER,
+                        total_losses INTEGER,
+                        current_amount NUMERIC(10, 2),
+                        consecutive_losses INTEGER,
+                        initial_balance NUMERIC(10, 2),
+                        contract_id VARCHAR(255)
+                    );
+                """)
+                cur.execute("""
+                    INSERT INTO user_settings (email, user_token, base_amount, tp_target, max_consecutive_losses,
+                                               total_wins, total_losses, current_amount, consecutive_losses, initial_balance,
+                                               contract_id)
+                    VALUES (%s, %s, %s, %s, %s, 0, 0, %s, 0, 0, NULL)
+                    ON CONFLICT (email) DO UPDATE SET
+                    user_token = EXCLUDED.user_token,
+                    base_amount = EXCLUDED.base_amount,
+                    tp_target = EXCLUDED.tp_target,
+                    max_consecutive_losses = EXCLUDED.max_consecutive_losses,
+                    total_wins = 0,
+                    total_losses = 0,
+                    current_amount = EXCLUDED.base_amount,
+                    consecutive_losses = 0,
+                    initial_balance = 0,
+                    contract_id = NULL
+                """, (email, settings["user_token"], settings["base_amount"], settings["tp_target"], 
+                      settings["max_consecutive_losses"], settings["base_amount"]))
+                conn.commit()
+                conn.close()
+                return True
+            except Exception as e:
+                print(f"❌ Error saving settings to database: {e}")
+                return False
+    return False
+
+def get_session_status_from_db(email):
+    conn = get_db_connection()
+    if conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT user_token, base_amount, tp_target, max_consecutive_losses, total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id FROM user_settings WHERE email = %s", (email,))
+            result = cur.fetchone()
+            conn.close()
+            if result:
+                return {
+                    "user_token": result[0],
+                    "base_amount": float(result[1]),
+                    "tp_target": float(result[2]),
+                    "max_consecutive_losses": int(result[3]),
+                    "total_wins": int(result[4]),
+                    "total_losses": int(result[5]),
+                    "current_amount": float(result[6]),
+                    "consecutive_losses": int(result[7]),
+                    "initial_balance": float(result[8]),
+                    "contract_id": result[9]
+                }
+    return None
+
+def get_all_active_sessions():
     conn = get_db_connection()
     if conn:
         with conn.cursor() as cur:
@@ -54,7 +125,7 @@ def clear_session_data(email):
             conn.commit()
             conn.close()
 
-# --- Trading Bot Logic ---
+# --- Trading Bot Logic (remains the same) ---
 def get_balance_and_currency(ws):
     req = {"balance": 1, "subscribe": 1}
     try:
@@ -147,38 +218,38 @@ def run_trading_job_for_user(session_data):
                     return
         
         if not contract_id:
-            # --- هنا تتم عملية جلب البيانات والتحليل ---
-            # سنقوم بجلب البيانات فقط إذا كانت الثانية 58 أو 59
-            now = datetime.now()
-            if now.second >= 58: 
-                req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
-                ws.send(json.dumps(req))
-                tick_data = json.loads(ws.recv())
-                if 'history' in tick_data and tick_data['history']['prices']:
-                    ticks = tick_data['history']['prices']
-                    df_ticks = pd.DataFrame({'price': ticks})
-                    signal, _ = analyse_data(df_ticks)
-                    if signal in ['Buy', 'Sell']:
-                        contract_type = "CALL" if signal == 'Buy' else "PUT"
-                        proposal_req = {
-                            "proposal": 1,
-                            "amount": round(current_amount, 2),
-                            "basis": "stake",
-                            "contract_type": contract_type,
-                            "currency": currency,
-                            "duration": 15, # مدة الصفقة
-                            "duration_unit": "s",
-                            "symbol": "R_100"
-                        }
-                        ws.send(json.dumps(proposal_req))
-                        proposal_response = json.loads(ws.recv())
-                        if 'proposal' in proposal_response:
-                            proposal_id = proposal_response['proposal']['id']
-                            order_response = place_order(ws, proposal_id, current_amount)
-                            if 'buy' in order_response and 'contract_id' in order_response['buy']:
-                                contract_id = order_response['buy']['contract_id']
-                                update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
-                                print(f"✅ Placed a {contract_type} trade for ${current_amount:.2f}")
+            req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
+            ws.send(json.dumps(req))
+            tick_data = json.loads(ws.recv())
+            
+            print(f"📈 Raw ticks data received: {tick_data}")
+            
+            if 'history' in tick_data and tick_data['history']['prices']:
+                ticks = tick_data['history']['prices']
+                df_ticks = pd.DataFrame({'price': ticks})
+                signal, _ = analyse_data(df_ticks)
+                if signal in ['Buy', 'Sell']:
+                    contract_type = "CALL" if signal == 'Buy' else "PUT"
+                    proposal_req = {
+                        "proposal": 1,
+                        "amount": round(current_amount, 2),
+                        "basis": "stake",
+                        "contract_type": contract_type,
+                        "currency": currency,
+                        "duration": 15,
+                        "duration_unit": "s",
+                        "symbol": "R_100"
+                    }
+                    ws.send(json.dumps(proposal_req))
+                    proposal_response = json.loads(ws.recv())
+                    print(f"📝 Proposal response: {proposal_response}")
+                    if 'proposal' in proposal_response:
+                        proposal_id = proposal_response['proposal']['id']
+                        order_response = place_order(ws, proposal_id, current_amount)
+                        if 'buy' in order_response and 'contract_id' in order_response['buy']:
+                            contract_id = order_response['buy']['contract_id']
+                            update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
+                            print(f"✅ Placed a {contract_type} trade for ${current_amount:.2f}")
     except Exception as e:
         print(f"\n❌ An error occurred in trading job for {email}: {e}")
     finally:
@@ -188,36 +259,59 @@ def run_trading_job_for_user(session_data):
 def bot_loop():
     while True:
         now = datetime.now()
-        # تحقق بشكل مستمر، وعندما تصل الثانية إلى 58 أو 59، قم بجلب البيانات والتحليل
-        if now.second >= 58: 
-            active_sessions = get_active_sessions()
+        if now.second >= 58:
+            print(f"⏰ It's {now.strftime('%H:%M:%S')}, checking for active sessions...")
+            active_sessions = get_all_active_sessions()
             if active_sessions:
                 for session in active_sessions:
                     run_trading_job_for_user(session)
-            # يمكن أن نترك هنا sleep صغير جداً لتجنب استهلاك المعالج بشكل كامل
-            time.sleep(0.1) 
+            else:
+                print("😴 No active sessions found. Sleeping for 1 second...")
+            time.sleep(1)
         else:
-            # إذا لم تكن الثانية 58، ننام لفترة قصيرة جداً لعدم استهلاك المعالج
             time.sleep(0.1)
 
-class RequestHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-        self.wfile.write(b"Bot is running...")
+# --- Flask Endpoints for Streamlit communication ---
+@app.route('/start_bot', methods=['POST'])
+def start_bot():
+    data = request.json
+    email = data.get('email')
+    settings = data.get('settings')
+    if not email or not settings:
+        return jsonify({"status": "error", "message": "Invalid data."}), 400
+    
+    success = start_new_session_in_db(email, settings)
+    if success:
+        return jsonify({"status": "success", "message": "Bot session started."}), 200
+    else:
+        return jsonify({"status": "error", "message": "Failed to start bot session in database."}), 500
 
-def run_http_server():
-    server_address = ('', 8080) # الاستماع على جميع الواجهات على المنفذ 8080
-    httpd = HTTPServer(server_address, RequestHandler)
-    print("Serving HTTP on port 8080...")
-    httpd.serve_forever()
+@app.route('/stop_bot', methods=['POST'])
+def stop_bot():
+    data = request.json
+    email = data.get('email')
+    if not email:
+        return jsonify({"status": "error", "message": "Invalid data."}), 400
+    
+    clear_session_data(email)
+    return jsonify({"status": "success", "message": "Bot session stopped."}), 200
 
+@app.route('/get_stats', methods=['POST'])
+def get_stats():
+    data = request.json
+    email = data.get('email')
+    if not email:
+        return jsonify({"status": "error", "message": "Invalid data."}), 400
+    
+    stats = get_session_status_from_db(email)
+    if stats:
+        return jsonify({"status": "success", "stats": stats}), 200
+    else:
+        return jsonify({"status": "error", "message": "No active session."}), 404
+
+# --- Main execution block ---
 if __name__ == "__main__":
-    # تشغيل حلقة البوت في Thread منفصل
     bot_thread = threading.Thread(target=bot_loop)
-    bot_thread.daemon = True # السماح للبرنامج بالخروج إذا انتهت الـ main thread
+    bot_thread.daemon = True
     bot_thread.start()
-
-    # تشغيل خادم الويب HTTP لإبقاء الخدمة نشطة (مهم لـ Render ولـ Uptime Robot)
-    run_http_server()
+    app.run(host='0.0.0.0', port=os.environ.get('PORT', 8080))
