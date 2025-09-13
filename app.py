@@ -1,6 +1,8 @@
 import streamlit as st
 import psycopg2
 import time
+from datetime import datetime
+import os
 
 # --- Database Connection Details ---
 DB_URI = "postgresql://bestan_user:gTJKgsCRwEu9ijNMD9d3IMxFcW5TAdE0@dpg-d329ao2dbo4c73a92kng-a.oregon-postgres.render.com/bestan" 
@@ -10,6 +12,8 @@ if "user_email" not in st.session_state:
     st.session_state.user_email = ""
 if "is_logged_in" not in st.session_state:
     st.session_state.is_logged_in = False
+if "refresh_counter" not in st.session_state:
+    st.session_state.refresh_counter = 0
 
 # --- Database Functions ---
 def get_db_connection():
@@ -23,23 +27,26 @@ def create_table_if_not_exists():
     conn = get_db_connection()
     if conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS user_settings (
-                    email VARCHAR(255) PRIMARY KEY,
-                    user_token VARCHAR(255),
-                    base_amount NUMERIC(10, 2),
-                    tp_target NUMERIC(10, 2),
-                    max_consecutive_losses INTEGER,
-                    total_wins INTEGER,
-                    total_losses INTEGER,
-                    current_amount NUMERIC(10, 2),
-                    consecutive_losses INTEGER,
-                    initial_balance NUMERIC(10, 2),
-                    contract_id VARCHAR(255)
-                );
-            """)
-            conn.commit()
-            conn.close()
+            try:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS user_settings (
+                        email VARCHAR(255) PRIMARY KEY,
+                        user_token VARCHAR(255),
+                        base_amount NUMERIC(10, 2),
+                        tp_target NUMERIC(10, 2),
+                        max_consecutive_losses INTEGER,
+                        total_wins INTEGER,
+                        total_losses INTEGER,
+                        current_amount NUMERIC(10, 2),
+                        consecutive_losses INTEGER,
+                        initial_balance NUMERIC(10, 2),
+                        contract_id VARCHAR(255)
+                    );
+                """)
+                conn.commit()
+                conn.close()
+            except Exception as e:
+                st.error(f"❌ Error creating table: {e}")
 
 def save_settings(email, settings):
     conn = get_db_connection()
@@ -100,6 +107,9 @@ def show_login_page():
             st.error("Please enter your email.")
         else:
             try:
+                if not os.path.exists("user_ids.txt"):
+                    st.error("❌ Error: 'user_ids.txt' file not found.")
+                    return
                 with open("user_ids.txt", "r") as f:
                     valid_emails = [line.strip().lower() for line in f.readlines()]
                 if email.lower() in valid_emails:
@@ -114,6 +124,8 @@ def show_login_page():
 def show_bot_settings():
     st.title("KHOURYBOT - Bot Settings")
     st.write(f"Welcome, {st.session_state.user_email}!")
+    st.write("Please enter your bot settings to start a new session.")
+
     user_token = st.text_input("Enter your Deriv API token:", type="password")
     base_amount = st.number_input("Base Amount ($)", min_value=0.5, step=0.5, value=0.5)
     tp_target = st.number_input("Take Profit Target ($)", min_value=1.0, step=1.0, value=10.0)
@@ -132,6 +144,7 @@ def show_bot_settings():
             save_settings(st.session_state.user_email, settings)
             st.success("Bot settings saved! The bot will now start working in the background.")
             st.info("You can close this tab, the bot will continue to run.")
+            time.sleep(2)
             st.rerun()
 
 def show_bot_stats(stats):
@@ -145,22 +158,32 @@ def show_bot_stats(stats):
             st.success("Bot has been stopped.")
             st.rerun()
     with col2:
-        if st.button("Refresh Status"):
+        st.write("")  # Empty space for alignment
+        if st.button("Refresh Now"):
+            st.session_state.refresh_counter += 1
             st.rerun()
 
     st.markdown("---")
     
-    current_balance = stats.get('current_balance', 0)
-    initial_balance = stats.get('initial_balance', 0)
-    profit = current_balance - initial_balance if initial_balance else 0
-
-    st.markdown(f"**Wins:** {stats['total_wins']} | **Losses:** {stats['total_losses']} | **Consecutive Losses:** {stats['consecutive_losses']}")
+    current_amount_float = float(stats['current_amount'])
+    initial_balance_float = float(stats['initial_balance'])
+    
+    profit = current_amount_float - initial_balance_float if initial_balance_float is not None and initial_balance_float != 0 else 0
+    
     st.metric(
-        "Current Balance",
-        f"{current_balance:.2f} USD",
-        delta=round(profit, 2),
+        "Current Profit/Loss",
+        f"{profit:.2f} USD",
+        delta=0, # No delta calculation needed here, just show the value
         delta_color="normal"
     )
+
+    st.markdown(f"**Wins:** {stats['total_wins']} | **Losses:** {stats['total_losses']} | **Consecutive Losses:** {stats['consecutive_losses']}")
+    st.info(f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
+    
+    # Auto-refresh logic every few seconds
+    time.sleep(5)
+    st.session_state.refresh_counter += 1
+    st.rerun()
 
 # --- Main App Logic ---
 create_table_if_not_exists()
@@ -168,7 +191,7 @@ if not st.session_state.is_logged_in:
     show_login_page()
 else:
     stats = get_session_status(st.session_state.user_email)
-    if stats:
+    if stats and stats['initial_balance'] != 0:
         show_bot_stats(stats)
     else:
         show_bot_settings()
