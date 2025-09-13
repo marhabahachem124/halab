@@ -10,7 +10,7 @@ import threading
 import decimal
 
 # --- Database Connection Details ---
-DB_URI = os.environ.get("DATABASE_URL", "postgresql://charboul_user:Nri3ODg6M9mDFu1kK71ru69FiAmKSNtY@dpg-d32peaqdbo4c73alceog-a.oregon-postgres.render.com/charboul")
+DB_URI = os.environ.get("DATABASE_URL", "postgresql://hayhat_user:qkHIm1gfX80dU45mvrDD5CeS5eGyOxMU@dpg-d32v8rripnbc73dibhi0-a.oregon-postgres.render.com/hayhat")
 
 # --- Authentication Logic ---
 def is_user_active(email):
