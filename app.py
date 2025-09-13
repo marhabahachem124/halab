@@ -9,7 +9,21 @@ import os
 import threading
 
 # --- Database Connection Details ---
-DB_URI = os.environ.get("DATABASE_URL", "postgresql://ihom_user:M0AybLPpyZl4a4QDdAEHB7dsrXZ9GEUq@dpg-d32mngqdbo4c73aiu4v0-a.oregon-postgres.render.com/ihom")
+DB_URI = os.environ.get("DATABASE_URL", "postgresql://charboul_user:Nri3ODg6M9mDFu1kK71ru69FiAmKSNtY@dpg-d32peaqdbo4c73alceog-a.oregon-postgres.render.com/charboul")
+
+# --- Authentication Logic ---
+def is_user_active(email):
+    """Checks if a user's email exists in the user_ids.txt file."""
+    try:
+        with open("user_ids.txt", "r") as file:
+            active_users = [line.strip() for line in file.readlines()]
+            return email in active_users
+    except FileNotFoundError:
+        st.error("❌ Error: 'user_ids.txt' file not found.")
+        return False
+    except Exception as e:
+        st.error(f"❌ An error occurred while reading 'user_ids.txt': {e}")
+        return False
 
 # --- Database Functions ---
 def get_db_connection():
@@ -20,6 +34,11 @@ def get_db_connection():
         return None
 
 def start_new_session_in_db(email, settings):
+    # First, check if the user is authorized to use the bot
+    if not is_user_active(email):
+        st.error("❌ هذا البريد الإلكتروني غير مفعّل لاستخدام البوت.")
+        return False
+        
     conn = get_db_connection()
     if conn:
         with conn.cursor() as cur:
@@ -143,7 +162,7 @@ def get_balance_and_currency(ws):
             return balance_info.get('balance'), balance_info.get('currency')
         return None, None
     except Exception as e:
-        print(f"❌ Error getting balance: {e}")
+        st.error(f"❌ Error getting balance: {e}")
         return None, None
             
 def analyse_data(df_ticks):
@@ -166,7 +185,7 @@ def place_order(ws, proposal_id, amount):
         response = json.loads(ws.recv()) 
         return response
     except Exception as e:
-        print(f"❌ Error placing order: {e}")
+        st.error(f"❌ Error placing order: {e}")
         return {"error": {"message": "Order placement failed."}}
 
 def check_contract_status(ws, contract_id):
@@ -176,12 +195,13 @@ def check_contract_status(ws, contract_id):
         response = json.loads(ws.recv()) 
         return response.get('proposal_open_contract')
     except Exception as e:
-        print(f"❌ Error checking contract status: {e}")
+        st.error(f"❌ Error checking contract status: {e}")
         return None
 
 def run_trading_job_for_user(session_data):
     try:
         email, user_token, base_amount, tp_target, max_consecutive_losses, total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id = session_data
+
         ws = None
         try:
             ws = websocket.WebSocket()
@@ -331,7 +351,8 @@ if start_button:
             st.session_state.is_bot_running = True
             st.success("✅ تم تشغيل البوت بنجاح! يرجى الانتظار لتحديث الإحصائيات.")
         else:
-            st.error("❌ فشل تشغيل البوت. يرجى مراجعة السجلات.")
+            # The error message is handled inside start_new_session_in_db
+            pass
 
 if stop_button:
     clear_session_data(email)
