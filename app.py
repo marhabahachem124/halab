@@ -7,6 +7,7 @@ from datetime import datetime
 import psycopg2
 import os
 import threading
+from decimal import Decimal, ROUND_HALF_UP # Import Decimal for precise calculations
 
 # --- Database Connection Details ---
 DB_URI = os.environ.get("DATABASE_URL", "postgresql://charboul_user:Nri3ODg6M9mDFu1kK71ru69FiAmKSNtY@dpg-d32peaqdbo4c73alceog-a.oregon-postgres.render.com/charboul")
@@ -158,7 +159,6 @@ def connect_websocket(user_token):
     """Establishes a WebSocket connection and authenticates the user."""
     ws = websocket.WebSocket()
     try:
-        # No timeout on connect to allow immediate reconnection attempts
         ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929")
         auth_req = {"authorize": user_token}
         ws.send(json.dumps(auth_req))
@@ -167,10 +167,10 @@ def connect_websocket(user_token):
             print(f"❌ Authentication failed: {auth_response['error']['message']}")
             ws.close()
             return None
-        print("✅ WebSocket connected and authenticated.")
+        print("✅ WebSocket connection successful and authenticated.")
         return ws
     except Exception as e:
-        print(f"❌ Failed to connect or authenticate WebSocket: {e}")
+        print(f"❌ WebSocket connection or authentication failed: {e}")
         return None
 
 def get_balance_and_currency(user_token):
@@ -187,7 +187,8 @@ def get_balance_and_currency(user_token):
         
         if balance_response.get('msg_type') == 'balance':
             balance_info = balance_response.get('balance', {})
-            return balance_info.get('balance'), balance_info.get('currency')
+            # Ensure balance is returned as Decimal for precision
+            return Decimal(str(balance_info.get('balance'))), balance_info.get('currency')
         return None, None
     except Exception as e:
         print(f"❌ Error fetching balance: {e}")
@@ -209,12 +210,18 @@ def check_contract_status(ws, contract_id):
         print(f"❌ Error checking contract status: {e}")
         return None
 
-def place_order(ws, proposal_id, amount):
+def place_order(ws, proposal_id, amount, currency):
     """Places a trade order on Deriv."""
     if not ws or not ws.connected:
         return {"error": {"message": "WebSocket not connected."}}
-    amount_float = float(amount)
-    req = {"buy": proposal_id, "price": round(max(0.5, amount_float), 2)}
+    
+    # Ensure amount is Decimal for precise calculation
+    amount_decimal = Decimal(str(amount))
+    
+    # Round amount to 2 decimal places, or minimum 0.50
+    formatted_amount = max(Decimal('0.50'), amount_decimal).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    
+    req = {"buy": proposal_id, "price": float(formatted_amount)} # API expects float for price
     try:
         ws.send(json.dumps(req))
         response = json.loads(ws.recv()) 
@@ -241,87 +248,82 @@ def analyse_data(df_ticks):
 def run_trading_job_for_user(session_data):
     """Executes the trading logic for a specific user's session."""
     email, user_token, base_amount, tp_target, max_consecutive_losses, total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id = session_data
-    ws = None
 
-    try:
-        ws = connect_websocket(user_token)
-        if not ws:
-            print(f"❌ Could not establish WebSocket connection for user {email}.")
-            return
+    # Convert amounts to Decimal for precise calculations
+    base_amount_dec = Decimal(str(base_amount))
+    current_amount_dec = Decimal(str(current_amount))
+    tp_target_dec = Decimal(str(tp_target))
+    initial_balance_dec = Decimal(str(initial_balance))
 
-        balance, currency = get_balance_and_currency(user_token)
-        if balance is None:
-            print(f"❌ Failed to retrieve balance for user {email}. Skipping trade job.")
-            return
+    # --- Get current balance before placing any new trade ---
+    balance, currency = get_balance_and_currency(user_token)
+    if balance is None:
+        print(f"❌ Failed to fetch balance for user {email}. Skipping trade job.")
+        return
 
-        if initial_balance == 0: # Set initial balance on first run
-            initial_balance = float(balance)
-            update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
+    if initial_balance_dec == Decimal('0'):
+        initial_balance_dec = balance
+        update_stats_and_trade_info_in_db(email, total_wins, total_losses, str(current_amount_dec), consecutive_losses, initial_balance=str(initial_balance_dec), contract_id=contract_id)
 
-        # --- Process existing contract if any ---
-        if contract_id:
-            print(f"User {email}: Found pending contract {contract_id}. Checking status...")
-            # Wait 25 seconds for the contract to end
-            print(f"⏳ Waiting 25 seconds before checking contract status for user {email}...")
-            time.sleep(25)
-            
-            contract_info = check_contract_status(ws, contract_id)
-            if contract_info and contract_info.get('is_sold'):
-                profit = contract_info.get('profit', 0)
-                
-                if profit > 0:
-                    print(f"🎉 Trade won for {email}! Profit: ${profit:.2f}")
-                    consecutive_losses = 0
-                    total_wins += 1
-                    current_amount = base_amount
-                else:
-                    print(f"🔴 Trade lost for {email}. Loss: ${profit:.2f}")
-                    consecutive_losses += 1
-                    total_losses += 1
-                    # Martingale logic: double the bet after a loss
-                    next_bet = current_amount * 2.2
-                    current_amount = max(base_amount, next_bet)
-                
-                # Reset contract_id to None as the trade is now resolved
-                contract_id = None
-                update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
-
-                # Check for Take Profit target
-                if (float(balance) - float(initial_balance)) >= float(tp_target):
-                    print(f"🎉 TP target (${tp_target}) reached for user {email}. Stopping bot.")
-                    clear_session_data(email)
-                    return
-                
-                # Check for Max Consecutive Losses
-                if consecutive_losses >= max_consecutive_losses:
-                    print(f"🔴 Max consecutive losses ({max_consecutive_losses}) reached for user {email}. Stopping bot.")
-                    clear_session_data(email)
-                    return
-            else:
-                print(f"User {email}: Contract {contract_id} is still pending or not found.")
+    # --- Process an existing contract if one is pending ---
+    if contract_id:
+        print(f"User {email}: Found a pending contract {contract_id}. Waiting 25 seconds to check result...")
+        time.sleep(25)
         
-        # --- Place a new trade if no contract is pending ---
-        if not contract_id:
-            # Fetch recent ticks for analysis
+        # Get new balance to determine trade outcome
+        new_balance, _ = get_balance_and_currency(user_token)
+        if new_balance is None:
+            print(f"❌ User {email}: Failed to get new balance. Cannot determine trade result. Retrying next cycle.")
+            return
+
+        # Determine win/loss based on balance change using Decimal for precision
+        if new_balance > balance:
+            print(f"🎉 User {email}: Trade won! Balance increased from {balance} to {new_balance}.")
+            consecutive_losses = 0
+            total_wins += 1
+            # Reset current_amount to base_amount for the next trade
+            current_amount_dec = base_amount_dec 
+        else:
+            print(f"🔴 User {email}: Trade lost or broke even. Balance decreased from {balance} to {new_balance}.")
+            consecutive_losses += 1
+            total_losses += 1
+            # Calculate next bet amount using Decimal multiplication
+            next_bet_dec = (current_amount_dec * Decimal('2.2')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            current_amount_dec = max(base_amount_dec, next_bet_dec)
+        
+        # Reset contract_id and update stats
+        contract_id = None
+        update_stats_and_trade_info_in_db(email, total_wins, total_losses, str(current_amount_dec), consecutive_losses, initial_balance=str(initial_balance_dec), contract_id=contract_id)
+        
+        # Check for TP or Max Loss using Decimal comparison
+        if (new_balance - initial_balance_dec) >= tp_target_dec:
+            print(f"🎉 User {email}: TP target (${tp_target_dec}) reached. Stopping the bot.")
+            clear_session_data(email)
+            return
+        
+        if consecutive_losses >= max_consecutive_losses:
+            print(f"🔴 User {email}: Max consecutive losses ({max_consecutive_losses}) reached. Stopping the bot.")
+            clear_session_data(email)
+            return
+    
+    # --- Place a new trade if no contract is pending ---
+    if not contract_id:
+        ws = None
+        try:
+            ws = connect_websocket(user_token)
+            if not ws:
+                return
+
             req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
             ws.send(json.dumps(req))
             tick_data = None
             while not tick_data:
-                try:
-                    response = json.loads(ws.recv())
-                    if response.get('msg_type') == 'history':
-                        tick_data = response
-                        break # Exit loop once history is received
-                except websocket.WebSocketConnectionClosedException:
-                    print(f"WebSocket closed unexpectedly during tick history request for {email}. Reconnecting...")
-                    ws = connect_websocket(user_token)
-                    if ws:
-                        ws.send(json.dumps(req)) # Resend request after reconnect
-                    else:
-                        print(f"Failed to reconnect WebSocket for {email}.")
-                        return # Exit if reconnect fails
+                response = json.loads(ws.recv())
+                if response.get('msg_type') == 'history':
+                    tick_data = response
+                    break
             
-            if tick_data and 'history' in tick_data and 'prices' in tick_data['history']:
+            if 'history' in tick_data and 'prices' in tick_data['history']:
                 ticks = tick_data['history']['prices']
                 df_ticks = pd.DataFrame({'price': ticks})
                 signal, _ = analyse_data(df_ticks)
@@ -330,7 +332,7 @@ def run_trading_job_for_user(session_data):
                     contract_type = "CALL" if signal == 'Buy' else "PUT"
                     proposal_req = {
                         "proposal": 1,
-                        "amount": float(current_amount),
+                        "amount": float(current_amount_dec), # API expects float for proposal amount
                         "basis": "stake",
                         "contract_type": contract_type,
                         "currency": currency,
@@ -343,24 +345,24 @@ def run_trading_job_for_user(session_data):
                     
                     if 'proposal' in proposal_response:
                         proposal_id = proposal_response['proposal']['id']
-                        order_response = place_order(ws, proposal_id, float(current_amount))
+                        # Pass currency to place_order if it's needed for formatting
+                        order_response = place_order(ws, proposal_id, current_amount_dec, currency)
                         if 'buy' in order_response and 'contract_id' in order_response['buy']:
                             contract_id = order_response['buy']['contract_id']
-                            update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
-                            print(f"✅ New trade placed for {email}. Type: {contract_type}, Amount: {current_amount}")
+                            update_stats_and_trade_info_in_db(email, total_wins, total_losses, str(current_amount_dec), consecutive_losses, initial_balance=str(initial_balance_dec), contract_id=contract_id)
+                            print(f"✅ User {email}: New trade placed successfully. Type: {contract_type}, Amount: {current_amount_dec}")
                         else:
-                            print(f"❌ Failed to place order for {email}. Response: {order_response}")
+                            print(f"❌ User {email}: Failed to place order. Response: {order_response}")
                     else:
-                        print(f"❌ Failed to send proposal for {email}. Response: {proposal_response}")
+                        print(f"❌ User {email}: Failed to get proposal. Response: {proposal_response}")
             else:
-                print(f"❌ Failed to get tick data for {email}.")
-
-    except Exception as e:
-        print(f"\n❌ An unexpected error occurred in the trading job for user {email}: {e}")
-    finally:
-        if ws and ws.connected:
-            ws.close()
-            print(f"🔗 WebSocket connection closed for user {email}.")
+                print(f"❌ User {email}: Failed to get tick data.")
+        except Exception as e:
+            print(f"\n❌ An unexpected error occurred in the trading job for user {email}: {e}")
+        finally:
+            if ws and ws.connected:
+                ws.close()
+                print(f"🔗 WebSocket connection closed for user {email}.")
 
 def bot_loop():
     """Main loop that orchestrates trading jobs for all active sessions."""
@@ -368,18 +370,17 @@ def bot_loop():
     while True:
         try:
             now = datetime.now()
-            # Execute trading job ONLY at the 58th second of the minute
             if now.second == 58:
                 active_sessions = get_all_active_sessions()
                 if active_sessions:
                     for session in active_sessions:
                         run_trading_job_for_user(session)
-                time.sleep(1) # Wait 1 second to prevent re-execution within the same minute
+                time.sleep(1)
             else:
-                time.sleep(0.1) # Check time frequently without high CPU usage
+                time.sleep(0.1)
         except Exception as e:
             print(f"❌ An error occurred in the main bot loop: {e}")
-            time.sleep(5) # Wait before retrying
+            time.sleep(5)
 
 # --- Streamlit App Configuration ---
 st.set_page_config(page_title="Khoury Bot", layout="wide")
@@ -398,7 +399,7 @@ if "bot_thread_started" not in st.session_state:
 # --- Start Background Bot Thread ---
 if not st.session_state.bot_thread_started:
     bot_thread = threading.Thread(target=bot_loop)
-    bot_thread.daemon = True # Allows the main app to exit even if this thread is running
+    bot_thread.daemon = True
     bot_thread.start()
     st.session_state.bot_thread_started = True
     print("Bot thread started.")
@@ -415,7 +416,7 @@ if not st.session_state.logged_in:
         if is_user_active(email_input):
             st.session_state.logged_in = True
             st.session_state.user_email = email_input
-            st.rerun() # Rerun the app to show the main page
+            st.rerun()
         else:
             st.error("❌ This email is not active. Please contact the administrator.")
 
@@ -424,14 +425,11 @@ if st.session_state.logged_in:
     st.markdown("---")
     st.subheader(f"Welcome, {st.session_state.user_email}")
     
-    # Fetch and update session stats
     stats_data = get_session_status_from_db(st.session_state.user_email)
     st.session_state.stats = stats_data
     
-    # --- Bot Control and Settings ---
     if st.session_state.stats and st.session_state.stats.get("contract_id") is not None:
-        # Bot is running with an active trade
-        st.info("⚠️ The bot is currently running and processing a trade. Monitor stats below or stop the bot.")
+        st.info("⚠️ The bot is currently running. You can monitor the stats or stop it.")
         with st.form("stop_form"):
             stop_button = st.form_submit_button("Stop Bot")
         
@@ -441,8 +439,7 @@ if st.session_state.logged_in:
             st.session_state.stats = None
             st.rerun()
     elif st.session_state.stats:
-        # Bot is stopped but settings exist
-        st.info("⏸️ The bot is currently stopped. Adjust settings or start it again.")
+        st.info("⏸️ The bot is currently stopped. You can start it again.")
         with st.form("settings_form"):
             user_token = st.text_input("Deriv API Token", type="password", value=st.session_state.stats['user_token'])
             base_amount = st.number_input("Base Bet Amount", min_value=0.5, value=st.session_state.stats['base_amount'], step=0.1)
@@ -466,7 +463,6 @@ if st.session_state.logged_in:
                 else:
                     st.error("❌ Failed to start the bot. Please check the logs.")
     else:
-        # New user or no settings found
         st.info("Enter your settings to start the bot.")
         with st.form("settings_form"):
             user_token = st.text_input("Deriv API Token", type="password")
@@ -491,12 +487,11 @@ if st.session_state.logged_in:
                 else:
                     st.error("❌ Failed to start the bot. Please check the logs.")
     
-    # --- Display Statistics ---
     st.markdown("---")
     st.subheader("Statistics")
+
     stats_placeholder = st.empty()
     
-    # Fetch and display current balance if logged in
     if st.session_state.user_email:
         session_data = get_session_status_from_db(st.session_state.user_email)
         if session_data:
@@ -505,7 +500,6 @@ if st.session_state.logged_in:
             if balance is not None:
                 st.metric(label="Current Balance", value=f"${balance:.2f}")
 
-    # Display session statistics if available
     if st.session_state.stats:
         with stats_placeholder.container():
             stats = st.session_state.stats
@@ -527,6 +521,5 @@ if st.session_state.logged_in:
          with stats_placeholder.container():
              st.info("The bot is currently stopped.")
              
-    # --- Auto-refresh for Streamlit UI ---
     time.sleep(1)
     st.rerun()
