@@ -5,7 +5,7 @@ import os
 
 # --- Configuration (URL of the bot service) ---
 # Change this to your Render URL when deployed
-BOT_SERVICE_URL = "http://localhost:8080" 
+BOT_SERVICE_URL = "https://hiboz.onrender.com" 
 
 # --- Session State ---
 if "user_email" not in st.session_state:
