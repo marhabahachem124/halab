@@ -4,16 +4,12 @@ import json
 import pandas as pd
 from datetime import datetime
 import psycopg2
-import sys
 import os
-from flask import Flask, jsonify, request # Added Flask imports
-import threading # To run the bot logic in a separate thread
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # --- Database Connection Details ---
 DB_URI = "postgresql://ihom_user:M0AybLPpyZl4a4QDdAEHB7dsrXZ9GEUq@dpg-d32mngqdbo4c73aiu4v0-a.oregon-postgres.render.com/ihom"
-
-# --- Flask App Setup ---
-app = Flask(__name__)
 
 # --- Database Functions ---
 def get_db_connection():
@@ -187,9 +183,7 @@ def run_trading_job_for_user(session_data):
         if 'ws' in locals() and ws.connected:
             ws.close()
 
-# --- Bot Logic Runner ---
-def run_bot_continuously():
-    print("🚀 Bot Logic Service Started. Waiting for sessions to become active in the database...")
+def bot_loop():
     while True:
         active_sessions = get_active_sessions()
         if active_sessions:
@@ -197,40 +191,26 @@ def run_bot_continuously():
                 run_trading_job_for_user(session)
         else:
             print("😴 No active sessions found. Sleeping for 10 seconds...")
-        time.sleep(10) # Sleep to prevent excessive database calls
+        time.sleep(10)
 
-# --- Flask API Endpoints ---
-@app.route('/health', methods=['GET'])
-def health_check():
-    # Check if there are any active sessions in the database
-    # This is a simple health check. For more robust checks, you might want to
-    # check the DB connection or other critical components.
-    active_sessions = get_active_sessions()
-    if active_sessions:
-        return jsonify({"status": "ok", "message": "Bot is running with active sessions."}), 200
-    else:
-        # If no active sessions, it's still running, but not actively trading for anyone.
-        # You might want to return a different status or message depending on your needs.
-        return jsonify({"status": "ok", "message": "Bot is running, but no active sessions."}), 200
+class RequestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Bot is running...")
 
-@app.route('/status', methods=['GET'])
-def get_status():
-    # You could add more detailed status here if needed.
-    # For now, it's similar to health check.
-    active_sessions = get_active_sessions()
-    if active_sessions:
-        return jsonify({"status": "running", "active_users": len(active_sessions)}), 200
-    else:
-        return jsonify({"status": "idle", "active_users": 0}), 200
+def run_http_server():
+    server_address = ('', 8080)
+    httpd = HTTPServer(server_address, RequestHandler)
+    print("Serving HTTP on port 8080...")
+    httpd.serve_forever()
 
-# --- Main Execution ---
-if __name__ == '__main__':
-    # Start the bot logic in a separate thread
-    bot_thread = threading.Thread(target=run_bot_continuously, daemon=True)
+if __name__ == "__main__":
+    # Start the bot loop in a separate thread
+    bot_thread = threading.Thread(target=bot_loop)
+    bot_thread.daemon = True
     bot_thread.start()
 
-    # Run the Flask app
-    # Render assigns a PORT environment variable.
-    port = int(os.environ.get("PORT", 8000)) # Default to 8000 if PORT env var not set
-    print(f"🚀 Flask Web Service Started on port {port}. Health check at /health")
-    app.run(host='0.0.0.0', port=port)
+    # Start the HTTP server to keep the service alive
+    run_http_server()
