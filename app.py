@@ -318,6 +318,15 @@ if "user_email" not in st.session_state:
     st.session_state.user_email = ""
 if "stats" not in st.session_state:
     st.session_state.stats = None
+if "bot_thread_started" not in st.session_state:
+    st.session_state.bot_thread_started = False
+
+# Ensure the bot loop runs in a background thread
+if not st.session_state.bot_thread_started:
+    bot_thread = threading.Thread(target=bot_loop)
+    bot_thread.daemon = True
+    bot_thread.start()
+    st.session_state.bot_thread_started = True
 
 # --- Login Page ---
 if not st.session_state.logged_in:
@@ -382,10 +391,8 @@ if st.session_state.logged_in:
     stats_data = get_session_status_from_db(st.session_state.user_email)
     if stats_data:
         st.session_state.stats = stats_data
-        st.success("✅ البوت قيد التشغيل")
-    else:
-        st.info("البوت متوقف حالياً.")
-
+    
+    # Rerender stats every 2 seconds
     if st.session_state.stats:
         with stats_placeholder.container():
             stats = st.session_state.stats
@@ -403,10 +410,6 @@ if st.session_state.logged_in:
             
             if stats['contract_id']:
                 st.warning("⚠️ هناك صفقة قيد الانتظار. سيتم تحديث الإحصائيات عند انتهائها.")
-
-# Ensure the bot loop runs in a background thread
-if "bot_thread_started" not in st.session_state:
-    bot_thread = threading.Thread(target=bot_loop)
-    bot_thread.daemon = True
-    bot_thread.start()
-    st.session_state.bot_thread_started = True
+    else:
+         with stats_placeholder.container():
+             st.info("البوت متوقف حالياً.")
