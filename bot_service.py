@@ -9,12 +9,12 @@ import threading
 from flask import Flask, request, jsonify
 
 # --- Database Connection Details ---
-DB_URI = "postgresql://ihom_user:M0AybLPpyZl4a4QDdAEHB7dsrXZ9GEUq@dpg-d32mngqdbo4c73aiu4v0-a.oregon-postgres.render.com/ihom"
+DB_URI = os.environ.get("DATABASE_URL", "postgresql://ihom_user:M0AybLPpyZl4a4QDdAEHB7dsrXZ9GEUq@dpg-d32mngqdbo4c73aiu4v0-a.oregon-postgres.render.com/ihom")
 
 # --- Flask App Setup ---
 app = Flask(__name__)
 
-# --- Database Functions ---
+# --- Database Functions (No changes here) ---
 def get_db_connection():
     try:
         return psycopg2.connect(DB_URI)
@@ -125,7 +125,7 @@ def clear_session_data(email):
             conn.commit()
             conn.close()
 
-# --- Trading Bot Logic (remains the same) ---
+# --- Trading Bot Logic ---
 def get_balance_and_currency(ws):
     req = {"balance": 1, "subscribe": 1}
     try:
@@ -139,11 +139,16 @@ def get_balance_and_currency(ws):
         return None, None
             
 def analyse_data(df_ticks):
+    print(f"🔍 Analyzing {len(df_ticks)} ticks...")
     if len(df_ticks) < 5:
+        print("❌ Analysis failed: Insufficient data. Need 5 ticks.")
         return "Neutral", "Insufficient data."
     last_5_ticks = df_ticks.tail(5).copy()
     open_5_ticks = last_5_ticks['price'].iloc[0]
     close_5_ticks = last_5_ticks['price'].iloc[-1]
+    
+    print(f"📊 5-Tick Analysis: Open={open_5_ticks}, Close={close_5_ticks}")
+    
     if close_5_ticks > open_5_ticks:
         return "Buy", None
     elif close_5_ticks < open_5_ticks:
@@ -173,11 +178,14 @@ def run_trading_job_for_user(session_data):
     try:
         email, user_token, base_amount, tp_target, max_consecutive_losses, total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id = session_data
 
+        print(f"🔄 Processing session for {email}...")
+
         ws = websocket.WebSocket()
         ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929", timeout=10)
         auth_req = {"authorize": user_token}
         ws.send(json.dumps(auth_req))
         auth_response = json.loads(ws.recv())
+        print(f"✅ Authorization response for {email}: {auth_response.get('msg_type')}")
 
         if auth_response.get('error'):
             print(f"❌ Auth failed for {email}: {auth_response['error']['message']}")
@@ -189,7 +197,10 @@ def run_trading_job_for_user(session_data):
             initial_balance = balance
             update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
         
+        print(f"📊 Current balance for {email}: {balance} {currency}")
+        
         if contract_id:
+            print(f"🔎 Checking status for open contract: {contract_id}")
             contract_info = check_contract_status(ws, contract_id)
             if contract_info and contract_info.get('is_sold'):
                 profit = contract_info.get('profit', 0)
@@ -206,6 +217,7 @@ def run_trading_job_for_user(session_data):
                     print(f"🔻 LOSS! New amount: ${current_amount:.2f}. Consecutive losses: {consecutive_losses}. Total losses: {total_losses}")
                 contract_id = None
                 update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
+                print("✅ Contract closed. Updated stats and reset contract_id.")
 
                 if (balance - initial_balance) >= tp_target:
                     print(f"🎉 Take Profit target (${tp_target}) reached. Stopping bot.")
@@ -218,16 +230,20 @@ def run_trading_job_for_user(session_data):
                     return
         
         if not contract_id:
+            print("📈 No open contract found. Attempting to get ticks and analyze...")
             req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
             ws.send(json.dumps(req))
             tick_data = json.loads(ws.recv())
             
-            print(f"📈 Raw ticks data received: {tick_data}")
+            print(f"✅ Received ticks data. Content size: {len(str(tick_data))}")
             
-            if 'history' in tick_data and tick_data['history']['prices']:
+            if 'history' in tick_data and 'prices' in tick_data['history']:
                 ticks = tick_data['history']['prices']
                 df_ticks = pd.DataFrame({'price': ticks})
                 signal, _ = analyse_data(df_ticks)
+                
+                print(f"📊 Analysis complete. Signal: {signal}")
+                
                 if signal in ['Buy', 'Sell']:
                     contract_type = "CALL" if signal == 'Buy' else "PUT"
                     proposal_req = {
@@ -240,16 +256,24 @@ def run_trading_job_for_user(session_data):
                         "duration_unit": "s",
                         "symbol": "R_100"
                     }
+                    print(f"💰 Sending proposal request for {contract_type} trade...")
                     ws.send(json.dumps(proposal_req))
                     proposal_response = json.loads(ws.recv())
-                    print(f"📝 Proposal response: {proposal_response}")
+                    
                     if 'proposal' in proposal_response:
                         proposal_id = proposal_response['proposal']['id']
+                        print(f"✅ Proposal received. Placing order...")
                         order_response = place_order(ws, proposal_id, current_amount)
                         if 'buy' in order_response and 'contract_id' in order_response['buy']:
                             contract_id = order_response['buy']['contract_id']
                             update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
                             print(f"✅ Placed a {contract_type} trade for ${current_amount:.2f}")
+                        else:
+                            print(f"❌ Failed to place order. Response: {order_response}")
+                    else:
+                        print(f"❌ Proposal failed. Response: {proposal_response}")
+            else:
+                print("❌ Failed to get ticks history or ticks data is empty.")
     except Exception as e:
         print(f"\n❌ An error occurred in trading job for {email}: {e}")
     finally:
@@ -262,6 +286,7 @@ def bot_loop():
         if now.second >= 58:
             print(f"⏰ It's {now.strftime('%H:%M:%S')}, checking for active sessions...")
             active_sessions = get_all_active_sessions()
+            print(f"📋 Found {len(active_sessions)} active session(s).")
             if active_sessions:
                 for session in active_sessions:
                     run_trading_job_for_user(session)
