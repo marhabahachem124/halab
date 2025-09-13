@@ -147,34 +147,38 @@ def run_trading_job_for_user(session_data):
                     return
         
         if not contract_id:
-            req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
-            ws.send(json.dumps(req))
-            tick_data = json.loads(ws.recv())
-            if 'history' in tick_data and tick_data['history']['prices']:
-                ticks = tick_data['history']['prices']
-                df_ticks = pd.DataFrame({'price': ticks})
-                signal, _ = analyse_data(df_ticks)
-                if signal in ['Buy', 'Sell']:
-                    contract_type = "CALL" if signal == 'Buy' else "PUT"
-                    proposal_req = {
-                        "proposal": 1,
-                        "amount": round(current_amount, 2),
-                        "basis": "stake",
-                        "contract_type": contract_type,
-                        "currency": currency,
-                        "duration": 15,
-                        "duration_unit": "s",
-                        "symbol": "R_100"
-                    }
-                    ws.send(json.dumps(proposal_req))
-                    proposal_response = json.loads(ws.recv())
-                    if 'proposal' in proposal_response:
-                        proposal_id = proposal_response['proposal']['id']
-                        order_response = place_order(ws, proposal_id, current_amount)
-                        if 'buy' in order_response and 'contract_id' in order_response['buy']:
-                            contract_id = order_response['buy']['contract_id']
-                            update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
-                            print(f"✅ Placed a {contract_type} trade for ${current_amount:.2f}")
+            # --- هنا تتم عملية جلب البيانات والتحليل ---
+            # سنقوم بجلب البيانات فقط إذا كانت الثانية 58 أو 59
+            now = datetime.now()
+            if now.second >= 58: 
+                req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
+                ws.send(json.dumps(req))
+                tick_data = json.loads(ws.recv())
+                if 'history' in tick_data and tick_data['history']['prices']:
+                    ticks = tick_data['history']['prices']
+                    df_ticks = pd.DataFrame({'price': ticks})
+                    signal, _ = analyse_data(df_ticks)
+                    if signal in ['Buy', 'Sell']:
+                        contract_type = "CALL" if signal == 'Buy' else "PUT"
+                        proposal_req = {
+                            "proposal": 1,
+                            "amount": round(current_amount, 2),
+                            "basis": "stake",
+                            "contract_type": contract_type,
+                            "currency": currency,
+                            "duration": 15, # مدة الصفقة
+                            "duration_unit": "s",
+                            "symbol": "R_100"
+                        }
+                        ws.send(json.dumps(proposal_req))
+                        proposal_response = json.loads(ws.recv())
+                        if 'proposal' in proposal_response:
+                            proposal_id = proposal_response['proposal']['id']
+                            order_response = place_order(ws, proposal_id, current_amount)
+                            if 'buy' in order_response and 'contract_id' in order_response['buy']:
+                                contract_id = order_response['buy']['contract_id']
+                                update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
+                                print(f"✅ Placed a {contract_type} trade for ${current_amount:.2f}")
     except Exception as e:
         print(f"\n❌ An error occurred in trading job for {email}: {e}")
     finally:
@@ -184,16 +188,17 @@ def run_trading_job_for_user(session_data):
 def bot_loop():
     while True:
         now = datetime.now()
-        if now.second >= 58:
+        # تحقق بشكل مستمر، وعندما تصل الثانية إلى 58 أو 59، قم بجلب البيانات والتحليل
+        if now.second >= 58: 
             active_sessions = get_active_sessions()
             if active_sessions:
                 for session in active_sessions:
                     run_trading_job_for_user(session)
-            else:
-                print("😴 No active sessions found. Sleeping for 1 second...")
-            time.sleep(1)
+            # يمكن أن نترك هنا sleep صغير جداً لتجنب استهلاك المعالج بشكل كامل
+            time.sleep(0.1) 
         else:
-            time.sleep(0.5)
+            # إذا لم تكن الثانية 58، ننام لفترة قصيرة جداً لعدم استهلاك المعالج
+            time.sleep(0.1)
 
 class RequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -203,14 +208,16 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Bot is running...")
 
 def run_http_server():
-    server_address = ('', 8080)
+    server_address = ('', 8080) # الاستماع على جميع الواجهات على المنفذ 8080
     httpd = HTTPServer(server_address, RequestHandler)
     print("Serving HTTP on port 8080...")
     httpd.serve_forever()
 
 if __name__ == "__main__":
+    # تشغيل حلقة البوت في Thread منفصل
     bot_thread = threading.Thread(target=bot_loop)
-    bot_thread.daemon = True
+    bot_thread.daemon = True # السماح للبرنامج بالخروج إذا انتهت الـ main thread
     bot_thread.start()
 
+    # تشغيل خادم الويب HTTP لإبقاء الخدمة نشطة (مهم لـ Render ولـ Uptime Robot)
     run_http_server()
