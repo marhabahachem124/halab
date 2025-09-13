@@ -1,12 +1,11 @@
 import streamlit as st
-import psycopg2
+import requests
 import time
-from datetime import datetime
 import os
-import sys
 
-# --- Database Connection Details ---
-DB_URI = "postgresql://ihom_user:M0AybLPpyZl4a4QDdAEHB7dsrXZ9GEUq@dpg-d32mngqdbo4c73aiu4v0-a.oregon-postgres.render.com/ihom" 
+# --- Configuration (URL of the bot service) ---
+# Change this to your Render URL when deployed
+BOT_SERVICE_URL = "http://localhost:8080" 
 
 # --- Session State ---
 if "user_email" not in st.session_state:
@@ -14,107 +13,24 @@ if "user_email" not in st.session_state:
 if "is_logged_in" not in st.session_state:
     st.session_state.is_logged_in = False
 
-# --- Database Functions ---
-def get_db_connection():
+# --- UI Functions ---
+def check_bot_status():
     try:
-        conn = psycopg2.connect(DB_URI)
-        return conn
-    except Exception as e:
-        st.error(f"❌ Error connecting to database: {e}")
+        response = requests.post(f"{BOT_SERVICE_URL}/get_stats", json={"email": st.session_state.user_email})
+        return response.status_code == 200
+    except requests.exceptions.RequestException:
+        return False
+
+def get_stats():
+    try:
+        response = requests.post(f"{BOT_SERVICE_URL}/get_stats", json={"email": st.session_state.user_email})
+        if response.status_code == 200:
+            return response.json()['stats']
+        return None
+    except requests.exceptions.RequestException:
+        st.error("❌ Failed to connect to bot service.")
         return None
 
-def create_table_if_not_exists():
-    conn = get_db_connection()
-    if conn:
-        with conn.cursor() as cur:
-            try:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS user_settings (
-                        email VARCHAR(255) PRIMARY KEY,
-                        user_token VARCHAR(255),
-                        base_amount NUMERIC(10, 2),
-                        tp_target NUMERIC(10, 2),
-                        max_consecutive_losses INTEGER,
-                        total_wins INTEGER,
-                        total_losses INTEGER,
-                        current_amount NUMERIC(10, 2),
-                        consecutive_losses INTEGER,
-                        initial_balance NUMERIC(10, 2),
-                        contract_id VARCHAR(255)
-                    );
-                """)
-                conn.commit()
-                print("✅ Table 'user_settings' ensured to exist.")
-            except Exception as e:
-                st.error(f"❌ Error during table creation/check: {e}")
-            finally:
-                conn.close()
-
-def save_settings(email, settings):
-    conn = get_db_connection()
-    if conn:
-        try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO user_settings (email, user_token, base_amount, tp_target, max_consecutive_losses,
-                                               total_wins, total_losses, current_amount, consecutive_losses, initial_balance,
-                                               contract_id)
-                    VALUES (%s, %s, %s, %s, %s, 0, 0, %s, 0, 0, NULL)
-                    ON CONFLICT (email) DO UPDATE SET
-                    user_token = EXCLUDED.user_token,
-                    base_amount = EXCLUDED.base_amount,
-                    tp_target = EXCLUDED.tp_target,
-                    max_consecutive_losses = EXCLUDED.max_consecutive_losses,
-                    total_wins = 0,
-                    total_losses = 0,
-                    current_amount = EXCLUDED.base_amount,
-                    consecutive_losses = 0,
-                    initial_balance = 0,
-                    contract_id = NULL
-                """, (email, settings["user_token"], settings["base_amount"], settings["tp_target"], 
-                      settings["max_consecutive_losses"], settings["base_amount"]))
-                conn.commit()
-                print(f"✅ Settings saved for {email}.")
-        except Exception as e:
-            st.error(f"❌ Error saving settings for {email}: {e}")
-        finally:
-            conn.close()
-
-def get_session_status(email):
-    conn = get_db_connection()
-    if conn:
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT total_wins, total_losses, current_amount, consecutive_losses, initial_balance FROM user_settings WHERE email = %s", (email,))
-                result = cur.fetchone()
-                if result:
-                    return {
-                        "total_wins": result[0],
-                        "total_losses": result[1],
-                        "current_amount": float(result[2]),
-                        "consecutive_losses": result[3],
-                        "initial_balance": float(result[4]) if result[4] is not None else 0.0 # Handle potential None for initial_balance
-                    }
-        except Exception as e:
-            st.error(f"❌ Error fetching session status for {email}: {e}")
-        finally:
-            conn.close()
-    return None
-
-def stop_session(email):
-    conn = get_db_connection()
-    if conn:
-        try:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM user_settings WHERE email = %s", (email,))
-                conn.commit()
-                print(f"✅ Session stopped and data cleared for {email}.")
-        except Exception as e:
-            st.error(f"❌ Error stopping session for {email}: {e}")
-        finally:
-            conn.close()
-
-# --- UI Functions ---
 def show_login_page():
     st.title("KHOURYBOT - Login 🤖")
     email = st.text_input("Enter your registered email:")
@@ -156,11 +72,16 @@ def show_bot_settings():
                 "tp_target": tp_target,
                 "max_consecutive_losses": max_consecutive_losses
             }
-            save_settings(st.session_state.user_email, settings)
-            st.success("Bot settings saved! The bot will now start working in the background.")
-            st.info("You can close this tab, the bot will continue to run.")
-            time.sleep(2)
-            st.rerun()
+            try:
+                response = requests.post(f"{BOT_SERVICE_URL}/start_bot", json={"email": st.session_state.user_email, "settings": settings})
+                if response.status_code == 200:
+                    st.success("Bot settings sent! The bot will now start working.")
+                    time.sleep(2)
+                    st.rerun()
+                else:
+                    st.error(f"❌ Failed to start bot: {response.json().get('message')}")
+            except requests.exceptions.RequestException:
+                st.error("❌ Could not connect to the bot service.")
 
 def show_bot_stats(stats):
     st.title("KHOURYBOT - Live Status")
@@ -169,44 +90,48 @@ def show_bot_stats(stats):
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Stop Bot", type="secondary"):
-            stop_session(st.session_state.user_email)
-            st.success("Bot has been stopped.")
-            st.rerun()
+            try:
+                response = requests.post(f"{BOT_SERVICE_URL}/stop_bot", json={"email": st.session_state.user_email})
+                if response.status_code == 200:
+                    st.success("Bot has been stopped.")
+                    time.sleep(2)
+                    st.rerun()
+                else:
+                    st.error("❌ Failed to stop bot.")
+            except requests.exceptions.RequestException:
+                st.error("❌ Could not connect to the bot service.")
     with col2:
         if st.button("Refresh Now"):
             st.rerun()
-
+    
     st.markdown("---")
     
-    current_amount_float = float(stats['current_amount'])
-    initial_balance_float = float(stats['initial_balance'])
-    
-    profit = current_amount_float - initial_balance_float if initial_balance_float is not None and initial_balance_float != 0 else 0
-    
-    st.metric(
-        "Current Profit/Loss",
-        f"{profit:.2f} USD",
-        delta=round(profit, 2),
-        delta_color="normal"
-    )
-    
-    st.markdown(f"**Wins:** {stats['total_wins']} | **Losses:** {stats['total_losses']} | **Consecutive Losses:** {stats['consecutive_losses']}")
-    st.info(f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
+    if stats:
+        current_amount = stats.get('current_amount', 0)
+        initial_balance = stats.get('initial_balance', 0)
+        profit = current_amount - initial_balance
+        
+        st.metric(
+            "Current Profit/Loss",
+            f"{profit:.2f} USD",
+            delta=round(profit, 2),
+            delta_color="normal"
+        )
+        
+        st.markdown(f"**Wins:** {stats.get('total_wins', 0)} | **Losses:** {stats.get('total_losses', 0)} | **Consecutive Losses:** {stats.get('consecutive_losses', 0)}")
+    else:
+        st.info("No active session or failed to retrieve stats.")
     
     # Auto-refresh logic every 1 second
     time.sleep(1)
     st.rerun()
 
 # --- Main App Logic ---
-# Ensure table exists before any database operations
-create_table_if_not_exists()
-
 if not st.session_state.is_logged_in:
     show_login_page()
 else:
-    stats = get_session_status(st.session_state.user_email)
-    # Check if stats exist AND initial_balance is set (meaning a session was started)
-    if stats and stats.get('initial_balance') is not None and stats['initial_balance'] != 0:
+    stats = get_stats()
+    if stats:
         show_bot_stats(stats)
     else:
         show_bot_settings()
