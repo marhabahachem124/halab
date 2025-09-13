@@ -233,9 +233,18 @@ def run_trading_job_for_user(session_data):
             print("📈 No open contract found. Attempting to get ticks and analyze...")
             req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
             ws.send(json.dumps(req))
-            tick_data = json.loads(ws.recv())
             
-            print(f"✅ Received ticks data. Content size: {len(str(tick_data))}")
+            # --- هذا هو التعديل الجديد والمهم ---
+            tick_data = None
+            while not tick_data:
+                response = json.loads(ws.recv())
+                if response.get('msg_type') == 'history':
+                    tick_data = response
+                elif response.get('msg_type') != 'tick': # نتجاهل التيكس المباشرة
+                    print(f"ℹ️ Received non-history message: {response.get('msg_type')}. Waiting for 'history'...")
+            # --- نهاية التعديل ---
+            
+            print(f"📈 Raw ticks data received: {tick_data}")
             
             if 'history' in tick_data and 'prices' in tick_data['history']:
                 ticks = tick_data['history']['prices']
