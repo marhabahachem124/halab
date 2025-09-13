@@ -2,15 +2,55 @@ import streamlit as st
 import time
 import websocket
 import json
-import pandas as pd
-from datetime import datetime
-import psycopg2
 import os
 import threading
 import decimal
+import sqlite3
+import pandas as pd
+from datetime import datetime
 
-# --- Database Connection Details ---
-DB_URI = os.environ.get("DATABASE_URL", "postgresql://hayhat_user:qkHIm1gfX80dU45mvrDD5CeS5eGyOxMU@dpg-d32v8rripnbc73dibhi0-a.oregon-postgres.render.com/hayhat")
+# --- SQLite Database Configuration ---
+DB_FILE = "sessions.db"
+
+def create_connection():
+    """Create a database connection to the SQLite database specified by DB_FILE"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        return conn
+    except sqlite3.Error as e:
+        st.error(f"❌ Database connection error: {e}")
+        return None
+
+def create_table_if_not_exists():
+    """Create the sessions table if it does not exist."""
+    conn = create_connection()
+    if conn:
+        try:
+            sql_create_table = """
+            CREATE TABLE IF NOT EXISTS sessions (
+                email TEXT PRIMARY KEY,
+                user_token TEXT NOT NULL,
+                base_amount REAL NOT NULL,
+                tp_target REAL NOT NULL,
+                max_consecutive_losses INTEGER NOT NULL,
+                total_wins INTEGER DEFAULT 0,
+                total_losses INTEGER DEFAULT 0,
+                current_amount REAL NOT NULL,
+                consecutive_losses INTEGER DEFAULT 0,
+                initial_balance REAL DEFAULT 0.0,
+                contract_id TEXT
+            );
+            """
+            conn.execute(sql_create_table)
+            conn.commit()
+            print("✅ 'sessions' table checked/created successfully.")
+        except sqlite3.Error as e:
+            st.error(f"❌ Error creating table: {e}")
+        finally:
+            conn.close()
+
+# Call this function at the start of the script to ensure the table exists
+create_table_if_not_exists()
 
 # --- Authentication Logic ---
 def is_user_active(email):
@@ -26,134 +66,92 @@ def is_user_active(email):
         st.error(f"❌ An error occurred while reading 'user_ids.txt': {e}")
         return False
 
-# --- Database Functions ---
-def get_db_connection():
-    """Establishes a connection to the PostgreSQL database."""
-    try:
-        conn = psycopg2.connect(DB_URI)
-        return conn
-    except Exception as e:
-        print(f"❌ Database connection error: {e}")
-        return None
-
+# --- SQLite Session Functions ---
 def start_new_session_in_db(email, settings):
     """Saves or updates user settings and initializes session data in the database."""
-    conn = get_db_connection()
+    conn = create_connection()
     if conn:
-        with conn.cursor() as cur:
-            try:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS user_settings (
-                        email VARCHAR(255) PRIMARY KEY,
-                        user_token VARCHAR(255),
-                        base_amount NUMERIC(10, 2),
-                        tp_target NUMERIC(10, 2),
-                        max_consecutive_losses INTEGER,
-                        total_wins INTEGER,
-                        total_losses INTEGER,
-                        current_amount NUMERIC(10, 2),
-                        consecutive_losses INTEGER,
-                        initial_balance NUMERIC(10, 2),
-                        contract_id VARCHAR(255)
-                    );
-                """)
-                cur.execute("""
-                    INSERT INTO user_settings (email, user_token, base_amount, tp_target, max_consecutive_losses,
-                                               total_wins, total_losses, current_amount, consecutive_losses, initial_balance,
-                                               contract_id)
-                    VALUES (%s, %s, %s, %s, %s, 0, 0, %s, 0, 0, NULL)
-                    ON CONFLICT (email) DO UPDATE SET
-                    user_token = EXCLUDED.user_token,
-                    base_amount = EXCLUDED.base_amount,
-                    tp_target = EXCLUDED.tp_target,
-                    max_consecutive_losses = EXCLUDED.max_consecutive_losses,
-                    total_wins = 0,
-                    total_losses = 0,
-                    current_amount = EXCLUDED.base_amount,
-                    consecutive_losses = 0,
-                    initial_balance = 0,
-                    contract_id = NULL
-                """, (email, settings["user_token"], settings["base_amount"], settings["tp_target"], 
-                      settings["max_consecutive_losses"], settings["base_amount"]))
-                conn.commit()
-                conn.close()
-                return True
-            except Exception as e:
-                print(f"❌ Error saving settings to database: {e}")
-                return False
-    return False
+        try:
+            with conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO sessions 
+                    (email, user_token, base_amount, tp_target, max_consecutive_losses, current_amount)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (email, settings["user_token"], settings["base_amount"], settings["tp_target"], settings["max_consecutive_losses"], settings["base_amount"]))
+            print(f"✅ Session for {email} saved to database.")
+        except sqlite3.Error as e:
+            st.error(f"❌ Error saving session to database: {e}")
+        finally:
+            conn.close()
 
 def get_session_status_from_db(email):
     """Retrieves the current session status for a given email from the database."""
-    conn = get_db_connection()
+    conn = create_connection()
     if conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT user_token, base_amount, tp_target, max_consecutive_losses, total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id FROM user_settings WHERE email = %s", (email,))
-            result = cur.fetchone()
+        try:
+            with conn:
+                conn.row_factory = sqlite3.Row  # This allows accessing columns by name
+                cursor = conn.execute("SELECT * FROM sessions WHERE email=?", (email,))
+                row = cursor.fetchone()
+                if row:
+                    return dict(row)
+                return None
+        except sqlite3.Error as e:
+            st.error(f"❌ Error fetching session from database: {e}")
+            return None
+        finally:
             conn.close()
-            if result:
-                # Convert Decimal types to float for calculations
-                return {
-                    "user_token": result[0],
-                    "base_amount": float(result[1]),
-                    "tp_target": float(result[2]),
-                    "max_consecutive_losses": int(result[3]),
-                    "total_wins": int(result[4]),
-                    "total_losses": int(result[5]),
-                    "current_amount": float(result[6]),
-                    "consecutive_losses": int(result[7]),
-                    "initial_balance": float(result[8]),
-                    "contract_id": result[9]
-                }
-    return None
 
 def get_all_active_sessions():
     """Fetches all currently active trading sessions from the database."""
-    conn = get_db_connection()
+    conn = create_connection()
     if conn:
         try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT email, user_token, base_amount, tp_target, max_consecutive_losses, total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id FROM user_settings;")
-            active_sessions = cur.fetchall()
-            conn.close()
-            return active_sessions
-        except Exception as e:
-            print(f"❌ An error occurred while fetching active sessions: {e}")
+            with conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute("SELECT * FROM sessions")
+                rows = cursor.fetchall()
+                sessions = []
+                for row in rows:
+                    sessions.append(dict(row))
+                return sessions
+        except sqlite3.Error as e:
+            st.error(f"❌ Error fetching all sessions from database: {e}")
             return []
-    return []
+        finally:
+            conn.close()
 
 def update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=None, contract_id=None):
     """Updates trading statistics and trade information for a user in the database."""
-    conn = get_db_connection()
+    conn = create_connection()
     if conn:
         try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE user_settings
-                    SET total_wins = %s,
-                        total_losses = %s,
-                        current_amount = %s,
-                        consecutive_losses = %s,
-                        initial_balance = COALESCE(%s, initial_balance),
-                        contract_id = %s
-                    WHERE email = %s
-                """, (total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id, email))
-            conn.commit()
+            with conn:
+                update_query = """
+                UPDATE sessions SET 
+                    total_wins = ?, total_losses = ?, current_amount = ?, consecutive_losses = ?, 
+                    initial_balance = COALESCE(?, initial_balance), contract_id = ?
+                WHERE email = ?
+                """
+                conn.execute(update_query, (total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id, email))
+            print(f"✅ Stats for {email} updated successfully.")
+        except sqlite3.Error as e:
+            st.error(f"❌ Error updating session in database: {e}")
+        finally:
             conn.close()
-        except Exception as e:
-            print(f"❌ An error occurred while updating the database for user {email}: {e}")
 
 def clear_session_data(email):
     """Deletes a user's session data from the database."""
-    conn = get_db_connection()
+    conn = create_connection()
     if conn:
         try:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM user_settings WHERE email = %s", (email,))
-            conn.commit()
+            with conn:
+                conn.execute("DELETE FROM sessions WHERE email=?", (email,))
+            print(f"✅ Session for {email} deleted successfully.")
+        except sqlite3.Error as e:
+            st.error(f"❌ Error deleting session from database: {e}")
+        finally:
             conn.close()
-        except Exception as e:
-            print(f"❌ An error occurred while stopping the session for user {email}: {e}")
 
 # --- WebSocket Helper Functions ---
 def connect_websocket(user_token):
@@ -244,9 +242,18 @@ def analyse_data(df_ticks):
 
 def run_trading_job_for_user(session_data):
     """Executes the trading logic for a specific user's session."""
-    email, user_token, base_amount, tp_target, max_consecutive_losses, total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id = session_data
+    email = session_data['email']
+    user_token = session_data['user_token']
+    base_amount = session_data['base_amount']
+    tp_target = session_data['tp_target']
+    max_consecutive_losses = session_data['max_consecutive_losses']
+    total_wins = session_data['total_wins']
+    total_losses = session_data['total_losses']
+    current_amount = session_data['current_amount']
+    consecutive_losses = session_data['consecutive_losses']
+    initial_balance = session_data['initial_balance']
+    contract_id = session_data['contract_id']
     
-    # --- Always process pending contract first if one exists ---
     if contract_id:
         ws = None
         try:
@@ -261,8 +268,6 @@ def run_trading_job_for_user(session_data):
             if contract_info and contract_info.get('is_sold'):
                 profit = float(contract_info.get('profit', 0))
                 
-                # --- START: Modified section to change the result definition ---
-                # A trade is considered a win if the profit is greater than zero.
                 is_win = profit > 0
                 
                 if is_win:
@@ -274,10 +279,8 @@ def run_trading_job_for_user(session_data):
                     print(f"🔴 User {email}: Trade lost. Loss: ${profit:.2f}")
                     consecutive_losses += 1
                     total_losses += 1
-                    # --- FIX HERE: Convert current_amount to float before multiplication ---
                     next_bet = float(current_amount) * 2.2 
                     current_amount = max(base_amount, next_bet)
-                # --- END: Modified section ---
                 
                 contract_id = None
                 update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
@@ -301,7 +304,6 @@ def run_trading_job_for_user(session_data):
                 ws.close()
                 print(f"🔗 WebSocket connection closed for user {email}.")
     
-    # --- Place a new trade ONLY if no contract is pending ---
     elif not contract_id:
         ws = None
         try:
@@ -460,11 +462,9 @@ if st.session_state.logged_in:
                     "tp_target": tp_target,
                     "max_consecutive_losses": max_consecutive_losses
                 }
-                success = start_new_session_in_db(st.session_state.user_email, settings)
-                if success:
-                    st.success("✅ Bot started successfully! Please refresh the page to see the stats.")
-                else:
-                    st.error("❌ Failed to start the bot. Please check the logs.")
+                start_new_session_in_db(st.session_state.user_email, settings)
+                st.success("✅ Bot started successfully! Please refresh the page to see the stats.")
+                st.rerun()
     else:
         st.info("Enter your settings to start the bot.")
         with st.form("settings_form"):
@@ -484,11 +484,9 @@ if st.session_state.logged_in:
                     "tp_target": tp_target,
                     "max_consecutive_losses": max_consecutive_losses
                 }
-                success = start_new_session_in_db(st.session_state.user_email, settings)
-                if success:
-                    st.success("✅ Bot started successfully! Please refresh the page to see the stats.")
-                else:
-                    st.error("❌ Failed to start the bot. Please check the logs.")
+                start_new_session_in_db(st.session_state.user_email, settings)
+                st.success("✅ Bot started successfully! Please refresh the page to see the stats.")
+                st.rerun()
     
     st.markdown("---")
     st.subheader("Statistics")
@@ -521,8 +519,8 @@ if st.session_state.logged_in:
             if stats['contract_id']:
                 st.warning("⚠️ A trade is pending. Stats will be updated after it's completed.")
     else:
-          with stats_placeholder.container():
-              st.info("The bot is currently stopped.")
+        with stats_placeholder.container():
+            st.info("The bot is currently stopped.")
               
     time.sleep(1)
     st.rerun()
