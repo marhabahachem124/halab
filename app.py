@@ -3,6 +3,7 @@ import psycopg2
 import time
 from datetime import datetime
 import os
+import sys
 
 # --- Database Connection Details ---
 DB_URI = "postgresql://ihom_user:M0AybLPpyZl4a4QDdAEHB7dsrXZ9GEUq@dpg-d32mngqdbo4c73aiu4v0-a.oregon-postgres.render.com/ihom" 
@@ -12,13 +13,12 @@ if "user_email" not in st.session_state:
     st.session_state.user_email = ""
 if "is_logged_in" not in st.session_state:
     st.session_state.is_logged_in = False
-if "refresh_counter" not in st.session_state:
-    st.session_state.refresh_counter = 0
 
 # --- Database Functions ---
 def get_db_connection():
     try:
-        return psycopg2.connect(DB_URI)
+        conn = psycopg2.connect(DB_URI)
+        return conn
     except Exception as e:
         st.error(f"❌ Error connecting to database: {e}")
         return None
@@ -44,58 +44,74 @@ def create_table_if_not_exists():
                     );
                 """)
                 conn.commit()
-                conn.close()
+                print("✅ Table 'user_settings' ensured to exist.")
             except Exception as e:
-                st.error(f"❌ Error creating table: {e}")
+                st.error(f"❌ Error during table creation/check: {e}")
+            finally:
+                conn.close()
 
 def save_settings(email, settings):
     conn = get_db_connection()
     if conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO user_settings (email, user_token, base_amount, tp_target, max_consecutive_losses,
-                                           total_wins, total_losses, current_amount, consecutive_losses, initial_balance,
-                                           contract_id)
-                VALUES (%s, %s, %s, %s, %s, 0, 0, %s, 0, 0, NULL)
-                ON CONFLICT (email) DO UPDATE SET
-                user_token = EXCLUDED.user_token,
-                base_amount = EXCLUDED.base_amount,
-                tp_target = EXCLUDED.tp_target,
-                max_consecutive_losses = EXCLUDED.max_consecutive_losses,
-                total_wins = 0,
-                total_losses = 0,
-                current_amount = EXCLUDED.base_amount,
-                consecutive_losses = 0,
-                initial_balance = 0,
-                contract_id = NULL
-            """, (email, settings["user_token"], settings["base_amount"], settings["tp_target"], 
-                  settings["max_consecutive_losses"], settings["base_amount"]))
-            conn.commit()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO user_settings (email, user_token, base_amount, tp_target, max_consecutive_losses,
+                                               total_wins, total_losses, current_amount, consecutive_losses, initial_balance,
+                                               contract_id)
+                    VALUES (%s, %s, %s, %s, %s, 0, 0, %s, 0, 0, NULL)
+                    ON CONFLICT (email) DO UPDATE SET
+                    user_token = EXCLUDED.user_token,
+                    base_amount = EXCLUDED.base_amount,
+                    tp_target = EXCLUDED.tp_target,
+                    max_consecutive_losses = EXCLUDED.max_consecutive_losses,
+                    total_wins = 0,
+                    total_losses = 0,
+                    current_amount = EXCLUDED.base_amount,
+                    consecutive_losses = 0,
+                    initial_balance = 0,
+                    contract_id = NULL
+                """, (email, settings["user_token"], settings["base_amount"], settings["tp_target"], 
+                      settings["max_consecutive_losses"], settings["base_amount"]))
+                conn.commit()
+                print(f"✅ Settings saved for {email}.")
+        except Exception as e:
+            st.error(f"❌ Error saving settings for {email}: {e}")
+        finally:
             conn.close()
 
 def get_session_status(email):
     conn = get_db_connection()
     if conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT total_wins, total_losses, current_amount, consecutive_losses, initial_balance FROM user_settings WHERE email = %s", (email,))
-            result = cur.fetchone()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT total_wins, total_losses, current_amount, consecutive_losses, initial_balance FROM user_settings WHERE email = %s", (email,))
+                result = cur.fetchone()
+                if result:
+                    return {
+                        "total_wins": result[0],
+                        "total_losses": result[1],
+                        "current_amount": float(result[2]),
+                        "consecutive_losses": result[3],
+                        "initial_balance": float(result[4]) if result[4] is not None else 0.0 # Handle potential None for initial_balance
+                    }
+        except Exception as e:
+            st.error(f"❌ Error fetching session status for {email}: {e}")
+        finally:
             conn.close()
-            if result:
-                return {
-                    "total_wins": result[0],
-                    "total_losses": result[1],
-                    "current_amount": float(result[2]),
-                    "consecutive_losses": result[3],
-                    "initial_balance": float(result[4])
-                }
     return None
 
 def stop_session(email):
     conn = get_db_connection()
     if conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM user_settings WHERE email = %s", (email,))
-            conn.commit()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM user_settings WHERE email = %s", (email,))
+                conn.commit()
+                print(f"✅ Session stopped and data cleared for {email}.")
+        except Exception as e:
+            st.error(f"❌ Error stopping session for {email}: {e}")
+        finally:
             conn.close()
 
 # --- UI Functions ---
@@ -158,7 +174,6 @@ def show_bot_stats(stats):
             st.rerun()
     with col2:
         if st.button("Refresh Now"):
-            st.session_state.refresh_counter += 1
             st.rerun()
 
     st.markdown("---")
@@ -180,16 +195,18 @@ def show_bot_stats(stats):
     
     # Auto-refresh logic every 1 second
     time.sleep(1)
-    st.session_state.refresh_counter += 1
     st.rerun()
 
 # --- Main App Logic ---
+# Ensure table exists before any database operations
 create_table_if_not_exists()
+
 if not st.session_state.is_logged_in:
     show_login_page()
 else:
     stats = get_session_status(st.session_state.user_email)
-    if stats and stats['initial_balance'] != 0:
+    # Check if stats exist AND initial_balance is set (meaning a session was started)
+    if stats and stats.get('initial_balance') is not None and stats['initial_balance'] != 0:
         show_bot_stats(stats)
     else:
         show_bot_settings()
