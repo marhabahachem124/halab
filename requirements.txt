@@ -1,5 +1,4 @@
-Flask==2.3.0
+streamlit
 psycopg2-binary
-pandas
-APScheduler>=3.0
 websocket-client
+pandas
