@@ -219,8 +219,8 @@ def run_trading_job_for_user(session_data):
             ws.send(json.dumps(auth_req))
             auth_response = json.loads(ws.recv())
             if auth_response.get('error'):
-                clear_session_data(email)
                 print(f"❌ فشل المصادقة للمستخدم {email}: {auth_response['error']['message']}")
+                clear_session_data(email) # Fix: Clear session on auth failure
                 return
         except Exception as e:
             print(f"❌ فشل الاتصال أو المصادقة للمستخدم {email}: {e}")
@@ -248,8 +248,9 @@ def run_trading_job_for_user(session_data):
                     current_amount = max(base_amount, next_bet)
                 contract_id = None
                 update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
-
-                if (balance - initial_balance) >= tp_target:
+                
+                # Check for TP/SL and clear session if reached
+                if (float(balance) - float(initial_balance)) >= float(tp_target): # Fix: Cast to float for comparison
                     print(f"🎉 تم الوصول إلى هدف الربح (${tp_target}) للمستخدم {email}. إيقاف البوت.")
                     clear_session_data(email)
                     return
@@ -310,6 +311,7 @@ def bot_loop():
     while True:
         try:
             now = datetime.now()
+            # Run the trading job every minute at 58th second
             if now.second >= 58:
                 active_sessions = get_all_active_sessions()
                 if active_sessions:
@@ -356,7 +358,7 @@ if not st.session_state.logged_in:
         if is_user_active(email_input):
             st.session_state.logged_in = True
             st.session_state.user_email = email_input
-            st.experimental_rerun()
+            st.rerun() # Fix: Use st.rerun()
         else:
             st.error("❌ هذا البريد الإلكتروني غير مفعّل. يرجى مراجعة المسؤول.")
 
@@ -380,7 +382,7 @@ if st.session_state.logged_in:
             clear_session_data(st.session_state.user_email)
             st.info("⏸️ تم إيقاف البوت.")
             st.session_state.stats = None
-            st.experimental_rerun()
+            st.rerun() # Fix: Use st.rerun()
     elif st.session_state.stats:
         st.info("⏸️ البوت متوقف حالياً. يمكنك تشغيله مرة أخرى.")
         # Display settings form and start button for inactive session
@@ -468,4 +470,4 @@ if st.session_state.logged_in:
              
     # --- Auto-refresh logic ---
     time.sleep(1)
-    st.experimental_rerun()
+    st.rerun() # Fix: Use st.rerun()
