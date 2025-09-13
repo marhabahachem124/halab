@@ -9,8 +9,7 @@ import os
 import threading
 
 # --- Database Connection Details ---
-# استبدال رابط قاعدة البيانات القديم بالجديد
-DB_URI = "postgresql://charboul_user:Nri3ODg6M9mDFu1kK71ru69FiAmKSNtY@dpg-d32peaqdbo4c73alceog-a.oregon-postgres.render.com/charboul"
+DB_URI = os.environ.get("DATABASE_URL", "postgresql://charboul_user:Nri3ODg6M9mDFu1kK71ru69FiAmKSNtY@dpg-d32peaqdbo4c73alceog-a.oregon-postgres.render.com/charboul")
 
 # --- Authentication Logic ---
 def is_user_active(email):
@@ -20,7 +19,7 @@ def is_user_active(email):
             active_users = [line.strip() for line in file.readlines()]
             return email in active_users
     except FileNotFoundError:
-        st.error("❌ خطأ: ملف 'user_ids.txt' غير موجود. يرجى إنشائه.")
+        st.error("❌ خطأ: لم يتم العثور على ملف 'user_ids.txt'.")
         return False
     except Exception as e:
         st.error(f"❌ حدث خطأ أثناء قراءة ملف 'user_ids.txt': {e}")
@@ -31,15 +30,10 @@ def get_db_connection():
     try:
         return psycopg2.connect(DB_URI)
     except Exception as e:
-        st.error(f"❌ خطأ في الاتصال بقاعدة البيانات: {e}")
+        print(f"❌ خطأ في الاتصال بقاعدة البيانات: {e}")
         return None
 
 def start_new_session_in_db(email, settings):
-    # أولاً، تحقق مما إذا كان المستخدم مفعّلًا
-    if not is_user_active(email):
-        st.error("❌ هذا البريد الإلكتروني غير مفعّل لاستخدام البوت.")
-        return False
-        
     conn = get_db_connection()
     if conn:
         with conn.cursor() as cur:
@@ -81,7 +75,7 @@ def start_new_session_in_db(email, settings):
                 conn.close()
                 return True
             except Exception as e:
-                st.error(f"❌ خطأ في حفظ الإعدادات بقاعدة البيانات: {e}")
+                print(f"❌ خطأ في حفظ الإعدادات بقاعدة البيانات: {e}")
                 return False
     return False
 
@@ -117,7 +111,7 @@ def get_all_active_sessions():
                 conn.close()
                 return active_sessions
         except Exception as e:
-            st.error(f"❌ حدث خطأ أثناء جلب الجلسات النشطة: {e}")
+            print(f"❌ حدث خطأ أثناء جلب الجلسات النشطة: {e}")
             return []
     return []
 
@@ -139,7 +133,7 @@ def update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_a
                 conn.commit()
                 conn.close()
         except Exception as e:
-            st.error(f"❌ حدث خطأ أثناء تحديث قاعدة البيانات للمستخدم {email}: {e}")
+            print(f"❌ حدث خطأ أثناء تحديث قاعدة البيانات للمستخدم {email}: {e}")
 
 def clear_session_data(email):
     conn = get_db_connection()
@@ -150,7 +144,7 @@ def clear_session_data(email):
                 conn.commit()
                 conn.close()
         except Exception as e:
-            st.error(f"❌ حدث خطأ أثناء مسح بيانات الجلسة للمستخدم {email}: {e}")
+            print(f"❌ حدث خطأ أثناء إيقاف الجلسة للمستخدم {email}: {e}")
 
 # --- Trading Bot Logic ---
 def get_balance_and_currency(ws):
@@ -163,7 +157,7 @@ def get_balance_and_currency(ws):
             return balance_info.get('balance'), balance_info.get('currency')
         return None, None
     except Exception as e:
-        st.error(f"❌ خطأ في جلب الرصيد: {e}")
+        print(f"❌ خطأ في جلب الرصيد: {e}")
         return None, None
             
 def analyse_data(df_ticks):
@@ -186,7 +180,7 @@ def place_order(ws, proposal_id, amount):
         response = json.loads(ws.recv()) 
         return response
     except Exception as e:
-        st.error(f"❌ خطأ في وضع الطلب: {e}")
+        print(f"❌ خطأ في وضع الصفقة: {e}")
         return {"error": {"message": "Order placement failed."}}
 
 def check_contract_status(ws, contract_id):
@@ -196,12 +190,13 @@ def check_contract_status(ws, contract_id):
         response = json.loads(ws.recv()) 
         return response.get('proposal_open_contract')
     except Exception as e:
-        st.error(f"❌ خطأ في التحقق من حالة العقد: {e}")
+        print(f"❌ خطأ في التحقق من حالة العقد: {e}")
         return None
 
 def run_trading_job_for_user(session_data):
     try:
         email, user_token, base_amount, tp_target, max_consecutive_losses, total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id = session_data
+
         ws = None
         try:
             ws = websocket.WebSocket()
@@ -210,11 +205,11 @@ def run_trading_job_for_user(session_data):
             ws.send(json.dumps(auth_req))
             auth_response = json.loads(ws.recv())
             if auth_response.get('error'):
-                st.error(f"❌ فشل المصادقة للمستخدم {email}: {auth_response['error']['message']}")
                 clear_session_data(email)
+                print(f"❌ فشل المصادقة للمستخدم {email}: {auth_response['error']['message']}")
                 return
         except Exception as e:
-            st.error(f"❌ فشل الاتصال أو المصادقة للمستخدم {email}: {e}")
+            print(f"❌ فشل الاتصال أو المصادقة للمستخدم {email}: {e}")
             return
 
         balance, currency = get_balance_and_currency(ws)
@@ -239,15 +234,13 @@ def run_trading_job_for_user(session_data):
                 update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
 
                 if (balance - initial_balance) >= tp_target:
-                    st.warning(f"🎉 تم الوصول إلى هدف الربح (${tp_target}). إيقاف البوت.")
+                    print(f"🎉 تم الوصول إلى هدف الربح (${tp_target}) للمستخدم {email}. إيقاف البوت.")
                     clear_session_data(email)
-                    st.session_state.is_bot_running = False # Stop bot from UI side
                     return
                 
                 if consecutive_losses >= max_consecutive_losses:
-                    st.error(f"🔴 تم الوصول إلى أقصى عدد خسائر متتالية ({max_consecutive_losses}). إيقاف البوت.")
+                    print(f"🔴 تم الوصول إلى الحد الأقصى للخسائر المتتالية ({max_consecutive_losses}) للمستخدم {email}. إيقاف البوت.")
                     clear_session_data(email)
-                    st.session_state.is_bot_running = False # Stop bot from UI side
                     return
         
         if not contract_id:
@@ -286,19 +279,20 @@ def run_trading_job_for_user(session_data):
                             contract_id = order_response['buy']['contract_id']
                             update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
                     else:
-                        st.error(f"❌ فشل الاقتراح. الرد: {proposal_response}")
+                        print(f"❌ فشل في إرسال المقترح. الاستجابة: {proposal_response}")
             else:
-                st.error("❌ فشل في الحصول على سجل التيكس أو البيانات فارغة.")
+                print("❌ فشل في الحصول على بيانات التيكس.")
     except Exception as e:
-        st.error(f"\n❌ حدث خطأ غير معالج في مهمة التداول للمستخدم {email}: {e}")
+        print(f"\n❌ حدث خطأ غير متوقع في مهمة التداول للمستخدم {email}: {e}")
     finally:
         if ws and ws.connected:
             ws.close()
+            print(f"🔗 تم إغلاق اتصال الويب سكت للمستخدم {email}.")
 
 def bot_loop():
+    print("🤖 بدأ تشغيل حلقة البوت الرئيسية...")
     while True:
-        # Check if bot is supposed to be running from Streamlit UI state
-        if st.session_state.is_bot_running:
+        try:
             now = datetime.now()
             if now.second >= 58:
                 active_sessions = get_all_active_sessions()
@@ -308,165 +302,111 @@ def bot_loop():
                 time.sleep(1)
             else:
                 time.sleep(0.1)
-        else:
-            time.sleep(1) # Sleep if bot is not running to avoid busy-waiting
+        except Exception as e:
+            print(f"❌ حدث خطأ في حلقة البوت الرئيسية: {e}")
+            time.sleep(5)
 
 # --- Streamlit App ---
-st.set_page_config(page_title="khourybot", layout="wide")
+st.set_page_config(page_title="Khoury Bot", layout="wide")
 
-# --- Initialize Session State Variables ---
-# Initialize these ONLY if they don't exist yet.
-# This prevents resetting on every rerun.
-if "is_bot_running" not in st.session_state:
-    st.session_state.is_bot_running = False
-if "user_email" not in st.session_state:
-    st.session_state.user_email = ""
+st.title("Khoury Bot")
+
+# Initialize session state for login status
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
+if "user_email" not in st.session_state:
+    st.session_state.user_email = ""
 if "stats" not in st.session_state:
     st.session_state.stats = None
-if "bot_thread_started" not in st.session_state:
-    st.session_state.bot_thread_started = False
 
-# --- Bot Thread Management ---
-# Start the bot thread only once when the app first loads
-if not st.session_state.bot_thread_started:
-    bot_thread = threading.Thread(target=bot_loop)
-    bot_thread.daemon = True # Allows the main program to exit even if thread is running
-    bot_thread.start()
-    st.session_state.bot_thread_started = True
-    # Optional: You might want to add a small delay to ensure the thread is ready,
-    # though the 'bot_loop' itself has sleeps.
-
-# --- Main App Logic ---
-
+# --- Login Page ---
 if not st.session_state.logged_in:
-    # --- Login Interface ---
-    st.title("khourybot - تسجيل الدخول")
     st.markdown("---")
     st.subheader("تسجيل الدخول")
-
-    with st.form("login_form"):
-        login_email = st.text_input("البريد الإلكتروني", key="login_email_input")
-        login_token = st.text_input("Deriv API Token", type="password", key="login_token_input")
-        login_button = st.form_submit_button("تسجيل الدخول")
-
-    if login_button:
-        if not login_token:
-            st.error("رجاءً أدخل الـ Deriv API Token.")
-        elif not login_email:
-            st.error("رجاءً أدخل البريد الإلكتروني.")
-        else:
-            # Check if the user is active using the file
-            if is_user_active(login_email):
-                # Temporarily store settings, will be saved to DB if all checks pass
-                st.session_state.temp_email = login_email
-                st.session_state.temp_token = login_token
-                st.session_state.logged_in = True
-                # Use rerun to clear the login form and show the settings page
-                st.rerun()
-            else:
-                st.error("❌ هذا البريد الإلكتروني غير مفعّل لاستخدام البوت. يرجى التأكد من وجوده في ملف user_ids.txt.")
-
-else:
-    # --- Settings Interface (only shown after successful login) ---
-    st.title("khourybot - الإعدادات")
-    st.markdown("---")
+    login_form = st.form("login_form")
+    email_input = login_form.text_input("البريد الإلكتروني")
+    submit_button = login_form.form_submit_button("تسجيل الدخول")
     
-    # Display the logged-in user's email (optional)
-    st.write(f"مرحباً بك, **{st.session_state.user_email if st.session_state.user_email else st.session_state.temp_email}**")
-
-    st.subheader("إعدادات البوت")
-
-    with st.form("settings_form"):
-        # Pre-fill inputs with existing settings if available
-        current_email = st.session_state.user_email if st.session_state.user_email else st.session_state.temp_email
-        
-        # Retrieve existing settings from DB if user is already configured
-        existing_settings = get_session_status_from_db(current_email)
-        
-        if existing_settings:
-            # If user exists, pre-fill token, amounts, etc.
-            token_value = existing_settings.get("user_token", "")
-            base_amount_value = existing_settings.get("base_amount", 0.5)
-            tp_target_value = existing_settings.get("tp_target", 20.0)
-            max_consecutive_losses_value = existing_settings.get("max_consecutive_losses", 5)
+    if submit_button:
+        if is_user_active(email_input):
+            st.session_state.logged_in = True
+            st.session_state.user_email = email_input
+            st.rerun()
         else:
-            # If new user or no settings yet, use defaults from temp session and UI inputs
-            token_value = st.session_state.temp_token if hasattr(st.session_state, 'temp_token') else ""
-            base_amount_value = 0.5
-            tp_target_value = 20.0
-            max_consecutive_losses_value = 5
-            
-        # Use pre-filled values in the form
-        user_token_setting = st.text_input("Deriv API Token", value=token_value, type="password", key="user_token_setting")
-        base_amount_setting = st.number_input("مقدار الرهان الأساسي", min_value=0.5, value=float(base_amount_value), step=0.1, key="base_amount_setting")
-        tp_target_setting = st.number_input("هدف الربح (Take Profit)", min_value=10.0, value=float(tp_target_value), step=5.0, key="tp_target_setting")
-        max_consecutive_losses_setting = st.number_input("الخسائر المتتالية القصوى", min_value=1, value=int(max_consecutive_losses_value), step=1, key="max_consecutive_losses_setting")
+            st.error("❌ هذا البريد الإلكتروني غير مفعّل. يرجى مراجعة المسؤول.")
+
+# --- Main App Page (after successful login) ---
+if st.session_state.logged_in:
+    st.markdown("---")
+    st.subheader(f"مرحباً بك، {st.session_state.user_email}")
+    st.write("الآن يمكنك إدخال إعدادات البوت والتحكم به.")
+    
+    with st.form("settings_form"):
+        user_token = st.text_input("Deriv API Token", type="password")
+        base_amount = st.number_input("مقدار الرهان الأساسي", min_value=0.5, value=0.5, step=0.1)
+        tp_target = st.number_input("هدف الربح (Take Profit)", min_value=10.0, value=20.0, step=5.0)
+        max_consecutive_losses = st.number_input("الخسائر المتتالية القصوى", min_value=1, value=5, step=1)
         
         col1, col2 = st.columns(2)
         with col1:
-            start_button = st.form_submit_button("تطبيق الإعدادات وتشغيل البوت")
+            start_button = st.form_submit_button("تشغيل البوت")
         with col2:
             stop_button = st.form_submit_button("إيقاف البوت")
 
     if start_button:
-        if not user_token_setting:
-            st.error("رجاءً أدخل الـ Deriv API Token.")
+        if not user_token:
+            st.error("رجاءً أدخل الـ Deriv API Token لتشغيل البوت.")
         else:
             settings = {
-                "user_token": user_token_setting,
-                "base_amount": base_amount_setting,
-                "tp_target": tp_target_setting,
-                "max_consecutive_losses": max_consecutive_losses_setting
+                "user_token": user_token,
+                "base_amount": base_amount,
+                "tp_target": tp_target,
+                "max_consecutive_losses": max_consecutive_losses
             }
-            # Save settings to DB and activate bot
-            success = start_new_session_in_db(current_email, settings)
+            success = start_new_session_in_db(st.session_state.user_email, settings)
             if success:
-                st.session_state.is_bot_running = True
-                st.session_state.user_email = current_email # Store email in session state after successful config
-                st.success("✅ تم حفظ الإعدادات وتشغيل البوت بنجاح!")
-                st.rerun() # Rerun to update UI (e.g., show stats)
-            # If start_new_session_in_db returned False, an error is already shown.
+                st.success("✅ تم تشغيل البوت بنجاح! يرجى الانتظار لتحديث الإحصائيات.")
+            else:
+                st.error("❌ فشل تشغيل البوت. يرجى مراجعة السجلات.")
 
     if stop_button:
-        clear_session_data(current_email)
-        st.session_state.is_bot_running = False
-        st.session_state.user_email = "" # Clear user email on logout
-        st.session_state.logged_in = False # Return to login page
-        st.session_state.stats = None # Clear stats
-        st.info("⏸️ تم إيقاف البوت وتسجيل الخروج.")
-        st.rerun() # Rerun to show login page
+        clear_session_data(st.session_state.user_email)
+        st.info("⏸️ تم إيقاف البوت.")
+        st.session_state.stats = None
 
-    # --- Display Stats (only if logged in and bot is running) ---
-    if st.session_state.logged_in and st.session_state.is_bot_running:
-        st.markdown("---")
-        st.subheader("الإحصائيات")
-        
-        stats_data = get_session_status_from_db(st.session_state.user_email)
-        if stats_data:
-            st.session_state.stats = stats_data
-        
-        if st.session_state.stats:
-            with st.container():
-                stats = st.session_state.stats
-                col1, col2, col3, col4, col5 = st.columns(5)
-                with col1:
-                    st.metric(label="رصيد التداول الحالي", value=f"${stats['current_amount']:.2f}")
-                with col2:
-                    st.metric(label="الربح المستهدف", value=f"${stats['tp_target']:.2f}")
-                with col3:
-                    st.metric(label="إجمالي الصفقات الرابحة", value=stats['total_wins'])
-                with col4:
-                    st.metric(label="إجمالي الصفقات الخاسرة", value=stats['total_losses'])
-                with col5:
-                    st.metric(label="الخسائر المتتالية", value=stats['consecutive_losses'])
-                
-                if stats['contract_id']:
-                    st.warning("⚠️ هناك صفقة قيد الانتظار. سيتم تحديث الإحصائيات عند انتهائها.")
-        else:
-            st.warning("🔄 جارٍ جلب الإحصائيات... يرجى الانتظار.")
-    elif st.session_state.logged_in and not st.session_state.is_bot_running:
-        st.info("البوت متوقف حالياً. اضغط على 'تطبيق الإعدادات وتشغيل البوت' للبدء.")
-    elif st.session_state.logged_in and not get_session_status_from_db(st.session_state.user_email):
-        st.warning("لم يتم العثور على إعدادات للبوت. يرجى ضبط الإعدادات وتشغيل البوت.")
+    st.markdown("---")
+    st.subheader("الإحصائيات")
+
+    stats_placeholder = st.empty()
+
+    stats_data = get_session_status_from_db(st.session_state.user_email)
+    if stats_data:
+        st.session_state.stats = stats_data
+        st.success("✅ البوت قيد التشغيل")
+    else:
+        st.info("البوت متوقف حالياً.")
+
+    if st.session_state.stats:
+        with stats_placeholder.container():
+            stats = st.session_state.stats
+            col1, col2, col3, col4, col5 = st.columns(5)
+            with col1:
+                st.metric(label="إجمالي الأرباح", value=f"${stats['current_amount']:.2f}")
+            with col2:
+                st.metric(label="الربح المستهدف", value=f"${stats['tp_target']:.2f}")
+            with col3:
+                st.metric(label="إجمالي الصفقات الرابحة", value=stats['total_wins'])
+            with col4:
+                st.metric(label="إجمالي الصفقات الخاسرة", value=stats['total_losses'])
+            with col5:
+                st.metric(label="الخسائر المتتالية", value=stats['consecutive_losses'])
+            
+            if stats['contract_id']:
+                st.warning("⚠️ هناك صفقة قيد الانتظار. سيتم تحديث الإحصائيات عند انتهائها.")
+
+# Ensure the bot loop runs in a background thread
+if "bot_thread_started" not in st.session_state:
+    bot_thread = threading.Thread(target=bot_loop)
+    bot_thread.daemon = True
+    bot_thread.start()
+    st.session_state.bot_thread_started = True
