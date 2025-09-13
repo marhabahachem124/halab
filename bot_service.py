@@ -6,9 +6,14 @@ from datetime import datetime
 import psycopg2
 import sys
 import os
+from flask import Flask, jsonify, request # Added Flask imports
+import threading # To run the bot logic in a separate thread
 
 # --- Database Connection Details ---
-DB_URI = "postgresql://ihom_user:M0AybLPpyZl4a4QDdAEHB7dsrXZ9GEUq@dpg-d32mngqdbo4c73aiu4v0-a.oregon-postgres.render.com/ihom" 
+DB_URI = "postgresql://ihom_user:M0AybLPpyZl4a4QDdAEHB7dsrXZ9GEUq@dpg-d32mngqdbo4c73aiu4v0-a.oregon-postgres.render.com/ihom"
+
+# --- Flask App Setup ---
+app = Flask(__name__)
 
 # --- Database Functions ---
 def get_db_connection():
@@ -21,51 +26,36 @@ def get_db_connection():
 def get_active_sessions():
     conn = get_db_connection()
     if conn:
-        try:
-            with conn.cursor() as cur:
-                # Added COALESCE for initial_balance to handle potential NULLs gracefully
-                cur.execute("SELECT email, user_token, base_amount, tp_target, max_consecutive_losses, total_wins, total_losses, current_amount, consecutive_losses, COALESCE(initial_balance, 0.0), contract_id FROM user_settings;")
-                active_sessions = cur.fetchall()
-                return active_sessions
-        except Exception as e:
-            print(f"❌ Error fetching active sessions: {e}")
-            return []
-        finally:
+        with conn.cursor() as cur:
+            cur.execute("SELECT email, user_token, base_amount, tp_target, max_consecutive_losses, total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id FROM user_settings;")
+            active_sessions = cur.fetchall()
             conn.close()
+            return active_sessions
     return []
 
 def update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=None, contract_id=None):
     conn = get_db_connection()
     if conn:
-        try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE user_settings
-                    SET total_wins = %s,
-                        total_losses = %s,
-                        current_amount = %s,
-                        consecutive_losses = %s,
-                        initial_balance = COALESCE(%s, initial_balance),
-                        contract_id = %s
-                    WHERE email = %s
-                """, (total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id, email))
-                conn.commit()
-        except Exception as e:
-            print(f"❌ Error updating stats for {email}: {e}")
-        finally:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE user_settings
+                SET total_wins = %s,
+                    total_losses = %s,
+                    current_amount = %s,
+                    consecutive_losses = %s,
+                    initial_balance = COALESCE(%s, initial_balance),
+                    contract_id = %s
+                WHERE email = %s
+            """, (total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id, email))
+            conn.commit()
             conn.close()
 
 def clear_session_data(email):
     conn = get_db_connection()
     if conn:
-        try:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM user_settings WHERE email = %s", (email,))
-                conn.commit()
-                print(f"✅ Session data cleared for {email}.")
-        except Exception as e:
-            print(f"❌ Error clearing session data for {email}: {e}")
-        finally:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM user_settings WHERE email = %s", (email,))
+            conn.commit()
             conn.close()
 
 # --- Trading Bot Logic ---
@@ -78,8 +68,7 @@ def get_balance_and_currency(ws):
             balance_info = response.get('balance', {})
             return balance_info.get('balance'), balance_info.get('currency')
         return None, None
-    except Exception as e:
-        print(f"❌ Error getting balance and currency: {e}")
+    except Exception:
         return None, None
             
 def analyse_data(df_ticks):
@@ -101,8 +90,7 @@ def place_order(ws, proposal_id, amount):
         ws.send(json.dumps(req))
         response = json.loads(ws.recv()) 
         return response
-    except Exception as e:
-        print(f"❌ Order placement failed: {e}")
+    except Exception:
         return {"error": {"message": "Order placement failed."}}
 
 def check_contract_status(ws, contract_id):
@@ -111,8 +99,7 @@ def check_contract_status(ws, contract_id):
         ws.send(json.dumps(req))
         response = json.loads(ws.recv()) 
         return response.get('proposal_open_contract')
-    except Exception as e:
-        print(f"❌ Error checking contract status: {e}")
+    except Exception:
         return None
 
 def run_trading_job_for_user(session_data):
@@ -131,7 +118,7 @@ def run_trading_job_for_user(session_data):
             return
         
         balance, currency = get_balance_and_currency(ws)
-        if initial_balance == 0: # Use 0 to check if it was ever set
+        if initial_balance is None or initial_balance == 0:
             initial_balance = balance
             update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
         
@@ -154,18 +141,18 @@ def run_trading_job_for_user(session_data):
                 update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
 
                 if (balance - initial_balance) >= tp_target:
-                    print(f"🎉 Take Profit target (${tp_target}) reached. Stopping bot for {email}.")
+                    print(f"🎉 Take Profit target (${tp_target}) reached. Stopping bot.")
                     clear_session_data(email)
                     return
                 
                 if consecutive_losses >= max_consecutive_losses:
-                    print(f"🔴 Maximum consecutive losses ({max_consecutive_losses}) reached for {email}. Stopping bot.")
+                    print(f"🔴 Maximum consecutive losses ({max_consecutive_losses}) reached. Stopping bot.")
                     clear_session_data(email)
                     return
         
         if not contract_id:
             now = datetime.now()
-            if now.second >= 58: # Check for trade placement in the last 2 seconds of the minute
+            if now.second >= 58:
                 req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
                 ws.send(json.dumps(req))
                 tick_data = json.loads(ws.recv())
@@ -193,25 +180,57 @@ def run_trading_job_for_user(session_data):
                             if 'buy' in order_response and 'contract_id' in order_response['buy']:
                                 contract_id = order_response['buy']['contract_id']
                                 update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
-                                print(f"✅ Placed a {contract_type} trade for ${current_amount:.2f} for {email}")
+                                print(f"✅ Placed a {contract_type} trade for ${current_amount:.2f}")
     except Exception as e:
         print(f"\n❌ An error occurred in trading job for {email}: {e}")
-        # Attempt to clear session if connection issues persist, to prevent infinite loop of errors for this user
-        if "connection refused" in str(e).lower() or "timed out" in str(e).lower():
-            print(f"Attempting to clear session for {email} due to connection error.")
-            clear_session_data(email)
     finally:
         if 'ws' in locals() and ws.connected:
             ws.close()
 
-if __name__ == "__main__":
-    print("🚀 Bot Service Started. Waiting for sessions to become active in the database...")
+# --- Bot Logic Runner ---
+def run_bot_continuously():
+    print("🚀 Bot Logic Service Started. Waiting for sessions to become active in the database...")
     while True:
         active_sessions = get_active_sessions()
         if active_sessions:
             for session in active_sessions:
-                # Pass session data to the function
                 run_trading_job_for_user(session)
         else:
             print("😴 No active sessions found. Sleeping for 10 seconds...")
         time.sleep(10) # Sleep to prevent excessive database calls
+
+# --- Flask API Endpoints ---
+@app.route('/health', methods=['GET'])
+def health_check():
+    # Check if there are any active sessions in the database
+    # This is a simple health check. For more robust checks, you might want to
+    # check the DB connection or other critical components.
+    active_sessions = get_active_sessions()
+    if active_sessions:
+        return jsonify({"status": "ok", "message": "Bot is running with active sessions."}), 200
+    else:
+        # If no active sessions, it's still running, but not actively trading for anyone.
+        # You might want to return a different status or message depending on your needs.
+        return jsonify({"status": "ok", "message": "Bot is running, but no active sessions."}), 200
+
+@app.route('/status', methods=['GET'])
+def get_status():
+    # You could add more detailed status here if needed.
+    # For now, it's similar to health check.
+    active_sessions = get_active_sessions()
+    if active_sessions:
+        return jsonify({"status": "running", "active_users": len(active_sessions)}), 200
+    else:
+        return jsonify({"status": "idle", "active_users": 0}), 200
+
+# --- Main Execution ---
+if __name__ == '__main__':
+    # Start the bot logic in a separate thread
+    bot_thread = threading.Thread(target=run_bot_continuously, daemon=True)
+    bot_thread.start()
+
+    # Run the Flask app
+    # Render assigns a PORT environment variable.
+    port = int(os.environ.get("PORT", 8000)) # Default to 8000 if PORT env var not set
+    print(f"🚀 Flask Web Service Started on port {port}. Health check at /health")
+    app.run(host='0.0.0.0', port=port)
