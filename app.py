@@ -10,7 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data001.db"
+DB_FILE = "trading_data002.db"
 trading_lock = threading.Lock()
 
 # --- Database & Utility Functions ---
@@ -240,35 +240,28 @@ def place_order(ws, proposal_id, amount):
 # --- Trading Bot Logic ---
 def analyse_data(df_ticks):
     """
-    Analyzes tick data to generate a trading signal based on a 3-group pattern.
-    Pattern 1 (Up-Down-Up) -> CALL
-    Pattern 2 (Down-Up-Down) -> PUT
+    Analyzes tick data to generate a trading signal based on a combined long-term (15 ticks) and short-term (5 ticks) trend.
     """
     if len(df_ticks) < 15:
-        return "Neutral", "Insufficient data. Need 15 ticks."
+        return "Neutral", "Insufficient data. Need at least 15 ticks."
 
-    # Split the last 15 ticks into 3 groups of 5
+    # Analyze the overall trend of the last 15 ticks
     last_15_ticks = df_ticks.tail(15).copy()
-    group1 = last_15_ticks.iloc[0:5]
-    group2 = last_15_ticks.iloc[5:10]
-    group3 = last_15_ticks.iloc[10:15]
-
-    # Determine the direction of each group
-    # A group is 'Up' if the last tick is > the first tick
-    # A group is 'Down' if the last tick is < the first tick
-    direction1 = "Up" if group1.iloc[-1]['price'] > group1.iloc[0]['price'] else "Down"
-    direction2 = "Up" if group2.iloc[-1]['price'] > group2.iloc[0]['price'] else "Down"
-    direction3 = "Up" if group3.iloc[-1]['price'] > group3.iloc[0]['price'] else "Down"
+    trend_15_up = last_15_ticks.iloc[-1]['price'] > last_15_ticks.iloc[0]['price']
+    trend_15_down = last_15_ticks.iloc[-1]['price'] < last_15_ticks.iloc[0]['price']
+    
+    # Analyze the short-term trend of the last 5 ticks
+    last_5_ticks = last_15_ticks.tail(5).copy()
+    trend_5_up = last_5_ticks.iloc[-1]['price'] > last_5_ticks.iloc[0]['price']
+    trend_5_down = last_5_ticks.iloc[-1]['price'] < last_5_ticks.iloc[0]['price']
 
     # Check for the specified patterns
-    pattern = f"{direction1}-{direction2}-{direction3}"
-    
-    if pattern == "Up-Down-Up":
-        return "Buy", "Detected 'Up-Down-Up' pattern."
-    elif pattern == "Down-Up-Down":
-        return "Sell", "Detected 'Down-Up-Down' pattern."
+    if trend_15_up and trend_5_up:
+        return "Buy", "Detected a strong uptrend signal (15 ticks and 5 ticks)."
+    elif trend_15_down and trend_5_down:
+        return "Sell", "Detected a strong downtrend signal (15 ticks and 5 ticks)."
     else:
-        return "Neutral", f"No clear pattern detected. Pattern was: {pattern}"
+        return "Neutral", "No clear combined trend signal detected."
 
 def run_trading_job_for_user(session_data, check_only=False):
     """Executes the trading logic for a specific user's session."""
@@ -346,7 +339,6 @@ def run_trading_job_for_user(session_data, check_only=False):
                     initial_balance = float(balance)
                     update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
                 
-                # --- الاستراتيجية الجديدة: 15 تكة بدلاً من 5 ---
                 req = {"ticks_history": "R_100", "end": "latest", "count": 15, "style": "ticks"}
                 ws.send(json.dumps(req))
                 tick_data = None
@@ -364,7 +356,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                         proposal_req = {
                             "proposal": 1, "amount": amount_rounded, "basis": "stake",
                             "contract_type": contract_type, "currency": currency,
-                            "duration": 15, "duration_unit": "s", "symbol": "R_100"
+                            "duration": 5, "duration_unit": "s", "symbol": "R_100"
                         }
                         ws.send(json.dumps(proposal_req))
                         proposal_response = json.loads(ws.recv())
@@ -394,10 +386,8 @@ def bot_loop():
     while True:
         try:
             now = datetime.now()
-            # The bot will only fetch sessions where is_running = 1
             active_sessions = get_all_active_sessions()
             
-            # This is the key logic: only proceed if there are active sessions
             if active_sessions:
                 for session in active_sessions:
                     email = session['email']
@@ -410,7 +400,7 @@ def bot_loop():
                     trade_start_time = latest_session_data.get('trade_start_time')
                     
                     if contract_id:
-                        if (time.time() - trade_start_time) >= 20: 
+                        if (time.time() - trade_start_time) >= 10: 
                             run_trading_job_for_user(latest_session_data, check_only=True)
                     
                     elif now.second == 58:
@@ -418,7 +408,6 @@ def bot_loop():
                         if re_checked_session_data and not re_checked_session_data.get('contract_id'):
                             run_trading_job_for_user(re_checked_session_data, check_only=False)
             
-            # The bot will sleep regardless of active sessions, ensuring it doesn't overload
             time.sleep(1) 
         except Exception as e:
             print(f"❌ حدث خطأ غير متوقع في الحلقة الرئيسية: {e}")
@@ -429,7 +418,6 @@ st.set_page_config(page_title="Khoury Bot", layout="wide")
 st.title("Khoury Bot")
 
 # --- Initialize Session State ---
-# This block must be at the top of the script
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "user_email" not in st.session_state:
@@ -437,11 +425,9 @@ if "user_email" not in st.session_state:
 if "stats" not in st.session_state:
     st.session_state.stats = None
     
-# Call this at the start to ensure the database is ready
 create_table_if_not_exists()
 
 # --- Start Background Bot Thread ---
-# This part is still necessary to start the thread, but the logic inside the thread is what matters
 if "bot_thread" not in st.session_state:
     bot_thread = threading.Thread(target=bot_loop, daemon=True)
     bot_thread.start()
