@@ -13,6 +13,7 @@ from datetime import datetime
 DB_FILE = "trading_data.db"
 trading_lock = threading.Lock()
 
+# --- Database Functions ---
 def create_connection():
     """Create a database connection to the SQLite database specified by DB_FILE"""
     try:
@@ -46,7 +47,6 @@ def create_table_if_not_exists():
             """
             conn.execute(sql_create_sessions_table)
             
-            # Add the new column if it doesn't exist
             cursor = conn.execute("PRAGMA table_info(sessions)")
             columns = [col[1] for col in cursor.fetchall()]
             if 'is_running' not in columns:
@@ -157,6 +157,20 @@ def update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_a
             st.error(f"❌ Error updating session in database: {e}")
         finally:
             conn.close()
+
+# --- Authentication Logic ---
+def is_user_active(email):
+    """Checks if a user's email exists in the user_ids.txt file."""
+    try:
+        with open("user_ids.txt", "r") as file:
+            active_users = [line.strip() for line in file.readlines()]
+        return email in active_users
+    except FileNotFoundError:
+        st.error("❌ Error: 'user_ids.txt' file not found.")
+        return False
+    except Exception as e:
+        st.error(f"❌ An error occurred while reading 'user_ids.txt': {e}")
+        return False
 
 # --- WebSocket Helper Functions ---
 def connect_websocket(user_token):
