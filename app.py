@@ -10,7 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data1.db" 
+DB_FILE = "trading_data2.db" 
 
 def create_connection():
     """Create a database connection to the SQLite database specified by DB_FILE"""
@@ -209,12 +209,36 @@ def check_contract_status(ws, contract_id):
         print(f"❌ Error checking contract status: {e}")
         return None
 
+def get_open_contracts(user_token):
+    """Fetches all open contracts for the user."""
+    ws = None
+    try:
+        ws = connect_websocket(user_token)
+        if not ws:
+            return None
+        
+        req = {"proposal_open_contract": 1, "contract_id": "all"}
+        ws.send(json.dumps(req))
+        response = json.loads(ws.recv())
+        
+        if response.get('msg_type') == 'proposal_open_contract':
+            if isinstance(response.get('proposal_open_contract'), list) and response.get('proposal_open_contract'):
+                return response.get('proposal_open_contract')
+        
+        return None 
+        
+    except Exception as e:
+        print(f"❌ Error fetching open contracts: {e}")
+        return None
+    finally:
+        if ws and ws.connected:
+            ws.close()
+
 def place_order(ws, proposal_id, amount):
     """Places a trade order on Deriv."""
     if not ws or not ws.connected:
         return {"error": {"message": "WebSocket not connected."}}
     
-    # Use Decimal for accurate rounding before sending
     amount_decimal = decimal.Decimal(str(amount)).quantize(decimal.Decimal('0.01'), rounding=decimal.ROUND_HALF_UP)
     
     req = {"buy": proposal_id, "price": float(amount_decimal)}
@@ -388,14 +412,19 @@ def bot_loop():
                     contract_id = latest_session_data.get('contract_id')
                     trade_start_time = latest_session_data.get('trade_start_time')
                     
-                    if contract_id and trade_start_time and (time.time() - trade_start_time) >= 25:
-                        print(f"User {latest_session_data['email']}: Found pending contract {contract_id}. Checking its status...")
-                        run_trading_job_for_user(latest_session_data, check_only=True)
+                    # ⚠️ التعديل الرئيسي: الأولوية لمعالجة الصفقة النشطة
+                    if contract_id:
+                        if (time.time() - trade_start_time) >= 20: 
+                            print(f"User {latest_session_data['email']}: Found pending contract {contract_id}. Checking its status...")
+                            run_trading_job_for_user(latest_session_data, check_only=True)
+                        else:
+                            print(f"User {latest_session_data['email']}: Contract {contract_id} is still pending. Waiting...")
                     
-                    elif now.second == 58 and not contract_id:
+                    # ⚠️ إدخال صفقة جديدة فقط إذا لم يكن هناك أي صفقات نشطة
+                    elif now.second == 58:
                         print(f"User {latest_session_data['email']}: No pending contract found. Initiating a new trade.")
                         run_trading_job_for_user(latest_session_data, check_only=False)
-                        time.sleep(2)
+                        
             time.sleep(1) 
         except Exception as e:
             print(f"❌ حدث خطأ غير متوقع في الحلقة الرئيسية: {e}")
@@ -447,62 +476,54 @@ if st.session_state.logged_in:
     stats_data = get_session_status_from_db(st.session_state.user_email)
     st.session_state.stats = stats_data
     
-    # ⚠️ الشرط الجديد هنا للتحكم في ظهور واجهة الإعدادات
-    if st.session_state.stats and st.session_state.stats.get("contract_id") is not None:
-        st.info("⚠️ The bot is currently running. You can monitor the stats or stop it.")
-        with st.form("stop_form"):
-            stop_button = st.form_submit_button("Stop Bot")
+    # --- Always show the settings form and the control buttons ---
+    with st.form("settings_and_control"):
+        st.subheader("Bot Settings and Control")
+        if st.session_state.stats:
+            user_token_val = st.session_state.stats['user_token']
+            base_amount_val = st.session_state.stats['base_amount']
+            tp_target_val = st.session_state.stats['tp_target']
+            max_consecutive_losses_val = st.session_state.stats['max_consecutive_losses']
+        else:
+            user_token_val = ""
+            base_amount_val = 0.5
+            tp_target_val = 20.0
+            max_consecutive_losses_val = 5
         
-        if stop_button:
+        user_token = st.text_input("Deriv API Token", type="password", value=user_token_val)
+        base_amount = st.number_input("Base Bet Amount", min_value=0.5, value=base_amount_val, step=0.1)
+        tp_target = st.number_input("Take Profit Target", min_value=10.0, value=tp_target_val, step=5.0)
+        max_consecutive_losses = st.number_input("Max Consecutive Losses", min_value=1, value=max_consecutive_losses_val, step=1)
+        
+        col_start, col_stop = st.columns(2)
+        with col_start:
+            start_button = st.form_submit_button("Start Bot")
+        with col_stop:
+            stop_button = st.form_submit_button("Stop Bot")
+    
+    if start_button:
+        if not user_token:
+            st.error("Please enter a Deriv API Token to start the bot.")
+        else:
+            settings = {
+                "user_token": user_token,
+                "base_amount": base_amount,
+                "tp_target": tp_target,
+                "max_consecutive_losses": max_consecutive_losses
+            }
+            start_new_session_in_db(st.session_state.user_email, settings)
+            st.success("✅ Bot started successfully! Please wait for the stats to update.")
+            st.rerun()
+
+    if stop_button:
+        if st.session_state.stats:
             clear_session_data(st.session_state.user_email)
             st.info("⏸️ The bot has been stopped.")
             st.session_state.stats = None
             st.rerun()
-    elif st.session_state.stats:
-        st.info("⏸️ The bot is currently stopped. You can start it again.")
-        with st.form("settings_form"):
-            user_token = st.text_input("Deriv API Token", type="password", value=st.session_state.stats['user_token'])
-            base_amount = st.number_input("Base Bet Amount", min_value=0.5, value=st.session_state.stats['base_amount'], step=0.1)
-            tp_target = st.number_input("Take Profit Target", min_value=10.0, value=st.session_state.stats['tp_target'], step=5.0)
-            max_consecutive_losses = st.number_input("Max Consecutive Losses", min_value=1, value=st.session_state.stats['max_consecutive_losses'], step=1)
-            start_button = st.form_submit_button("Start Bot")
-        
-        if start_button:
-            if not user_token:
-                st.error("Please enter a Deriv API Token to start the bot.")
-            else:
-                settings = {
-                    "user_token": user_token,
-                    "base_amount": base_amount,
-                    "tp_target": tp_target,
-                    "max_consecutive_losses": max_consecutive_losses
-                }
-                start_new_session_in_db(st.session_state.user_email, settings)
-                st.success("✅ Bot started successfully! Please refresh the page to see the stats.")
-                st.rerun()
-    else:
-        st.info("Enter your settings to start the bot.")
-        with st.form("settings_form"):
-            user_token = st.text_input("Deriv API Token", type="password")
-            base_amount = st.number_input("Base Bet Amount", min_value=0.5, value=0.5, step=0.1)
-            tp_target = st.number_input("Take Profit Target", min_value=10.0, value=20.0, step=5.0)
-            max_consecutive_losses = st.number_input("Max Consecutive Losses", min_value=1, value=5, step=1)
-            start_button = st.form_submit_button("Start Bot")
-        
-        if start_button:
-            if not user_token:
-                st.error("Please enter a Deriv API Token to start the bot.")
-            else:
-                settings = {
-                    "user_token": user_token,
-                    "base_amount": base_amount,
-                    "tp_target": tp_target,
-                    "max_consecutive_losses": max_consecutive_losses
-                }
-                start_new_session_in_db(st.session_state.user_email, settings)
-                st.success("✅ Bot started successfully! Please refresh the page to see the stats.")
-                st.rerun()
-    
+        else:
+            st.warning("⚠️ The bot is already stopped.")
+
     st.markdown("---")
     st.subheader("Statistics")
 
