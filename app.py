@@ -10,7 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data2.db" 
+DB_FILE = "trading_data3.db" 
 
 def create_connection():
     """Create a database connection to the SQLite database specified by DB_FILE"""
@@ -412,7 +412,6 @@ def bot_loop():
                     contract_id = latest_session_data.get('contract_id')
                     trade_start_time = latest_session_data.get('trade_start_time')
                     
-                    # ⚠️ التعديل الرئيسي: الأولوية لمعالجة الصفقة النشطة
                     if contract_id:
                         if (time.time() - trade_start_time) >= 20: 
                             print(f"User {latest_session_data['email']}: Found pending contract {contract_id}. Checking its status...")
@@ -420,10 +419,15 @@ def bot_loop():
                         else:
                             print(f"User {latest_session_data['email']}: Contract {contract_id} is still pending. Waiting...")
                     
-                    # ⚠️ إدخال صفقة جديدة فقط إذا لم يكن هناك أي صفقات نشطة
+                    # ⚠️ التعديل الرئيسي: تحقق إضافي قبل إطلاق الصفقة
                     elif now.second == 58:
-                        print(f"User {latest_session_data['email']}: No pending contract found. Initiating a new trade.")
-                        run_trading_job_for_user(latest_session_data, check_only=False)
+                        # الحصول على أحدث حالة للجلسة مرة أخرى لمنع حالة السباق
+                        re_checked_session_data = get_session_status_from_db(session['email'])
+                        if re_checked_session_data and not re_checked_session_data.get('contract_id'):
+                            print(f"User {latest_session_data['email']}: No pending contract found. Initiating a new trade.")
+                            run_trading_job_for_user(latest_session_data, check_only=False)
+                        else:
+                             print(f"User {latest_session_data['email']}: A contract was just opened by another part of the loop. Skipping this cycle.")
                         
             time.sleep(1) 
         except Exception as e:
