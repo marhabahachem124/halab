@@ -10,7 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data999.db"
+DB_FILE = "trading_data001.db"
 trading_lock = threading.Lock()
 
 # --- Database & Utility Functions ---
@@ -239,18 +239,36 @@ def place_order(ws, proposal_id, amount):
 
 # --- Trading Bot Logic ---
 def analyse_data(df_ticks):
-    """Analyzes tick data to generate a trading signal (Buy, Sell, Neutral)."""
-    if len(df_ticks) < 5:
-        return "Neutral", "Insufficient data."
-    last_5_ticks = df_ticks.tail(5).copy()
-    open_5_ticks = last_5_ticks['price'].iloc[0]
-    close_5_ticks = last_5_ticks['price'].iloc[-1]
-    if close_5_ticks > open_5_ticks:
-        return "Sell", None
-    elif close_5_ticks < open_5_ticks:
-        return "Buy", None
+    """
+    Analyzes tick data to generate a trading signal based on a 3-group pattern.
+    Pattern 1 (Up-Down-Up) -> CALL
+    Pattern 2 (Down-Up-Down) -> PUT
+    """
+    if len(df_ticks) < 15:
+        return "Neutral", "Insufficient data. Need 15 ticks."
+
+    # Split the last 15 ticks into 3 groups of 5
+    last_15_ticks = df_ticks.tail(15).copy()
+    group1 = last_15_ticks.iloc[0:5]
+    group2 = last_15_ticks.iloc[5:10]
+    group3 = last_15_ticks.iloc[10:15]
+
+    # Determine the direction of each group
+    # A group is 'Up' if the last tick is > the first tick
+    # A group is 'Down' if the last tick is < the first tick
+    direction1 = "Up" if group1.iloc[-1]['price'] > group1.iloc[0]['price'] else "Down"
+    direction2 = "Up" if group2.iloc[-1]['price'] > group2.iloc[0]['price'] else "Down"
+    direction3 = "Up" if group3.iloc[-1]['price'] > group3.iloc[0]['price'] else "Down"
+
+    # Check for the specified patterns
+    pattern = f"{direction1}-{direction2}-{direction3}"
+    
+    if pattern == "Up-Down-Up":
+        return "Buy", "Detected 'Up-Down-Up' pattern."
+    elif pattern == "Down-Up-Down":
+        return "Sell", "Detected 'Down-Up-Down' pattern."
     else:
-        return "Neutral", "No clear signal."
+        return "Neutral", f"No clear pattern detected. Pattern was: {pattern}"
 
 def run_trading_job_for_user(session_data, check_only=False):
     """Executes the trading logic for a specific user's session."""
@@ -327,7 +345,9 @@ def run_trading_job_for_user(session_data, check_only=False):
                 if initial_balance == 0:
                     initial_balance = float(balance)
                     update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
-                req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
+                
+                # --- الاستراتيجية الجديدة: 15 تكة بدلاً من 5 ---
+                req = {"ticks_history": "R_100", "end": "latest", "count": 15, "style": "ticks"}
                 ws.send(json.dumps(req))
                 tick_data = None
                 while not tick_data:
@@ -496,7 +516,7 @@ if st.session_state.logged_in:
 
     if stop_button:
         update_is_running_status(st.session_state.user_email, 0)
-        st.info("⏸ The bot has been stopped.")
+        st.info("⏸️ The bot has been stopped.")
         st.session_state.stats = None
         st.rerun()
 
@@ -506,9 +526,9 @@ if st.session_state.logged_in:
     stats_placeholder = st.empty()
     
     if is_user_bot_running:
-        st.success("🟢 Your bot is *RUNNING*.")
+        st.success("🟢 Your bot is **RUNNING**.")
     else:
-        st.error("🔴 Your bot is *STOPPED*.")
+        st.error("🔴 Your bot is **STOPPED**.")
 
     if st.session_state.user_email:
         session_data = get_session_status_from_db(st.session_state.user_email)
@@ -534,7 +554,7 @@ if st.session_state.logged_in:
                 st.metric(label="Consecutive Losses", value=stats['consecutive_losses'])
             
             if stats['contract_id']:
-                st.warning("⚠ A trade is pending. Stats will be updated after it's completed.")
+                st.warning("⚠️ A trade is pending. Stats will be updated after it's completed.")
     else:
         with stats_placeholder.container():
             st.info("The bot is currently stopped.")
