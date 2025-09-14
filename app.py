@@ -10,7 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data12.db" 
+DB_FILE = "trading_data1.db" 
 
 def create_connection():
     """Create a database connection to the SQLite database specified by DB_FILE"""
@@ -266,7 +266,6 @@ def run_trading_job_for_user(session_data, check_only=False):
             if contract_info and contract_info.get('is_sold'):
                 profit = float(contract_info.get('profit', 0))
                 
-                # ⚠️ التعديل الرئيسي هنا للتعامل مع صفقة التعادل
                 if profit > 0:
                     print(f"🎉 User {email}: Trade won! Profit: ${profit:.2f}")
                     consecutive_losses = 0
@@ -278,13 +277,12 @@ def run_trading_job_for_user(session_data, check_only=False):
                     total_losses += 1
                     next_bet = float(current_amount) * 2.2 
                     current_amount = max(base_amount, next_bet)
-                else: # profit == 0 (صفقة تعادل)
+                else: 
                     print(f"➖ User {email}: Trade was a tie (zero profit). Amount remains ${current_amount:.2f}")
                     consecutive_losses = 0
-                    # لا يتم تغيير current_amount ولا إحصائيات الربح/الخسارة
                 
                 contract_id = None
-                trade_start_time = 0.0 # reset time on completion
+                trade_start_time = 0.0
                 update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id, trade_start_time=trade_start_time)
 
                 new_balance, _ = get_balance_and_currency(user_token)
@@ -356,7 +354,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                         order_response = place_order(ws, proposal_id, float(current_amount))
                         if 'buy' in order_response and 'contract_id' in order_response['buy']:
                             contract_id = order_response['buy']['contract_id']
-                            trade_start_time = time.time() # تسجيل الوقت الحالي
+                            trade_start_time = time.time()
                             update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id, trade_start_time=trade_start_time)
                             print(f"✅ User {email}: New trade placed successfully. Type: {contract_type}, Amount: {current_amount}")
                         else:
@@ -397,7 +395,7 @@ def bot_loop():
                     elif now.second == 58 and not contract_id:
                         print(f"User {latest_session_data['email']}: No pending contract found. Initiating a new trade.")
                         run_trading_job_for_user(latest_session_data, check_only=False)
-
+                        time.sleep(2)
             time.sleep(1) 
         except Exception as e:
             print(f"❌ حدث خطأ غير متوقع في الحلقة الرئيسية: {e}")
@@ -449,6 +447,7 @@ if st.session_state.logged_in:
     stats_data = get_session_status_from_db(st.session_state.user_email)
     st.session_state.stats = stats_data
     
+    # ⚠️ الشرط الجديد هنا للتحكم في ظهور واجهة الإعدادات
     if st.session_state.stats and st.session_state.stats.get("contract_id") is not None:
         st.info("⚠️ The bot is currently running. You can monitor the stats or stop it.")
         with st.form("stop_form"):
