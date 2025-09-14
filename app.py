@@ -13,7 +13,7 @@ from datetime import datetime
 DB_FILE = "trading_data.db"
 trading_lock = threading.Lock()
 
-# --- Database Functions ---
+# --- Database & Utility Functions ---
 def create_connection():
     """Create a database connection to the SQLite database specified by DB_FILE"""
     try:
@@ -58,6 +58,19 @@ def create_table_if_not_exists():
             st.error(f"❌ Error creating/updating table: {e}")
         finally:
             conn.close()
+
+def is_user_active(email):
+    """Checks if a user's email exists in the user_ids.txt file."""
+    try:
+        with open("user_ids.txt", "r") as file:
+            active_users = [line.strip() for line in file.readlines()]
+        return email in active_users
+    except FileNotFoundError:
+        st.error("❌ Error: 'user_ids.txt' file not found.")
+        return False
+    except Exception as e:
+        st.error(f"❌ An error occurred while reading 'user_ids.txt': {e}")
+        return False
 
 def start_new_session_in_db(email, settings):
     """Saves or updates user settings and initializes session data in the database."""
@@ -157,20 +170,6 @@ def update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_a
             st.error(f"❌ Error updating session in database: {e}")
         finally:
             conn.close()
-
-# --- Authentication Logic ---
-def is_user_active(email):
-    """Checks if a user's email exists in the user_ids.txt file."""
-    try:
-        with open("user_ids.txt", "r") as file:
-            active_users = [line.strip() for line in file.readlines()]
-        return email in active_users
-    except FileNotFoundError:
-        st.error("❌ Error: 'user_ids.txt' file not found.")
-        return False
-    except Exception as e:
-        st.error(f"❌ An error occurred while reading 'user_ids.txt': {e}")
-        return False
 
 # --- WebSocket Helper Functions ---
 def connect_websocket(user_token):
@@ -298,12 +297,12 @@ def run_trading_job_for_user(session_data, check_only=False):
                 new_balance, _ = get_balance_and_currency(user_token)
                 if new_balance is not None and (float(new_balance) - float(initial_balance)) >= float(tp_target):
                     print(f"🎉 User {email}: TP target (${tp_target}) reached. Stopping the bot.")
-                    clear_session_data(email)
+                    update_is_running_status(email, 0)
                     return
                 
                 if consecutive_losses >= max_consecutive_losses:
                     print(f"🔴 User {email}: Max consecutive losses ({max_consecutive_losses}) reached. Stopping the bot.")
-                    clear_session_data(email)
+                    update_is_running_status(email, 0)
                     return
             else:
                 print(f"User {email}: Contract {contract_id} is still pending. Retrying next cycle.")
@@ -373,7 +372,10 @@ def bot_loop():
     while True:
         try:
             now = datetime.now()
+            # The bot will only fetch sessions where is_running = 1
             active_sessions = get_all_active_sessions()
+            
+            # This is the key logic: only proceed if there are active sessions
             if active_sessions:
                 for session in active_sessions:
                     email = session['email']
@@ -393,6 +395,8 @@ def bot_loop():
                         re_checked_session_data = get_session_status_from_db(email)
                         if re_checked_session_data and not re_checked_session_data.get('contract_id'):
                             run_trading_job_for_user(re_checked_session_data, check_only=False)
+            
+            # The bot will sleep regardless of active sessions, ensuring it doesn't overload
             time.sleep(1) 
         except Exception as e:
             print(f"❌ حدث خطأ غير متوقع في الحلقة الرئيسية: {e}")
@@ -405,20 +409,10 @@ st.title("Khoury Bot")
 # Call this at the start to ensure the database is ready
 create_table_if_not_exists()
 
-# --- Initialize Session State ---
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-if "user_email" not in st.session_state:
-    st.session_state.user_email = ""
-if "stats" not in st.session_state:
-    st.session_state.stats = None
-if "bot_thread_started" not in st.session_state:
-    st.session_state.bot_thread_started = False
-
 # --- Start Background Bot Thread ---
-if not st.session_state.bot_thread_started:
-    bot_thread = threading.Thread(target=bot_loop)
-    bot_thread.daemon = True
+# This part is still necessary to start the thread, but the logic inside the thread is what matters
+if "bot_thread_started" not in st.session_state:
+    bot_thread = threading.Thread(target=bot_loop, daemon=True)
     bot_thread.start()
     st.session_state.bot_thread_started = True
     print("Bot thread started.")
@@ -490,7 +484,7 @@ if st.session_state.logged_in:
             st.rerun()
 
     if stop_button:
-        clear_session_data(st.session_state.user_email)
+        update_is_running_status(st.session_state.user_email, 0)
         st.info("⏸️ The bot has been stopped.")
         st.session_state.stats = None
         st.rerun()
