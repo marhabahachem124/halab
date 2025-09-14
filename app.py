@@ -10,7 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data234.db"
+DB_FILE = "trading_data000.db"
 # A lock to prevent multiple trades from being initiated at the same time
 trading_lock = threading.Lock()
 
@@ -101,10 +101,13 @@ def clear_session_data(email):
     if conn:
         try:
             with conn:
+                # Update is_running to 0 before deleting to signal the bot thread to stop
+                conn.execute("UPDATE sessions SET is_running = 0 WHERE email = ?", (email,))
+                # Then delete the rest of the session data
                 conn.execute("DELETE FROM sessions WHERE email=?", (email,))
-            print(f"✅ Session for {email} deleted successfully.")
+            print(f"✅ Session for {email} stopped and deleted successfully.")
         except sqlite3.Error as e:
-            st.error(f"❌ Error deleting session from database: {e}")
+            st.error(f"❌ Error stopping/deleting session from database: {e}")
         finally:
             conn.close()
 
@@ -114,7 +117,7 @@ def get_session_status_from_db(email):
     if conn:
         try:
             with conn:
-                conn.row_factory = sqlite3.Row  # This allows accessing columns by name
+                conn.row_factory = sqlite3.Row
                 cursor = conn.execute("SELECT * FROM sessions WHERE email=?", (email,))
                 row = cursor.fetchone()
                 if row:
@@ -226,6 +229,25 @@ def analyse_data(df_ticks):
     else:
         return "Neutral", "No clear signal."
 
+def update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=None, contract_id=None, trade_start_time=None):
+    """Updates trading statistics and trade information for a user in the database."""
+    conn = create_connection()
+    if conn:
+        try:
+            with conn:
+                update_query = """
+                UPDATE sessions SET 
+                    total_wins = ?, total_losses = ?, current_amount = ?, consecutive_losses = ?, 
+                    initial_balance = COALESCE(?, initial_balance), contract_id = ?, trade_start_time = COALESCE(?, trade_start_time)
+                WHERE email = ?
+                """
+                conn.execute(update_query, (total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id, trade_start_time, email))
+            print(f"✅ Stats for {email} updated successfully.")
+        except sqlite3.Error as e:
+            st.error(f"❌ Error updating session in database: {e}")
+        finally:
+            conn.close()
+
 def run_trading_job_for_user(session_data, check_only=False):
     """Executes the trading logic for a specific user's session."""
     email = session_data['email']
@@ -270,13 +292,13 @@ def run_trading_job_for_user(session_data, check_only=False):
 
                 new_balance, _ = get_balance_and_currency(user_token)
                 if new_balance is not None and (float(new_balance) - float(initial_balance)) >= float(tp_target):
-                    print(f"🎉 User {email}: TP target (${tp_target}) reached. Stopping the bot.")
-                    clear_session_data(email)
+                    print(f"🎉 User {email}: TP target (${tp_target}) reached. Stopping the bot for this user.")
+                    clear_session_data(email) # This will set is_running to 0
                     return
                 
                 if consecutive_losses >= max_consecutive_losses:
-                    print(f"🔴 User {email}: Max consecutive losses ({max_consecutive_losses}) reached. Stopping the bot.")
-                    clear_session_data(email)
+                    print(f"🔴 User {email}: Max consecutive losses ({max_consecutive_losses}) reached. Stopping the bot for this user.")
+                    clear_session_data(email) # This will set is_running to 0
                     return
             else:
                 print(f"User {email}: Contract {contract_id} is still pending. Retrying next cycle.")
@@ -291,6 +313,12 @@ def run_trading_job_for_user(session_data, check_only=False):
         with trading_lock:
             ws = None
             try:
+                # Re-check if the bot is still running before proceeding
+                current_session_data = get_session_status_from_db(email)
+                if not current_session_data or current_session_data.get('is_running') == 0:
+                    print(f"User {email}: Bot was stopped externally, stopping this job.")
+                    return
+
                 ws = connect_websocket(user_token)
                 if not ws: return
                 balance, currency = get_balance_and_currency(user_token)
@@ -353,23 +381,25 @@ def bot_loop():
                     email = session['email']
                     
                     latest_session_data = get_session_status_from_db(email)
-                    if not latest_session_data or latest_session_data.get('is_running') == 0:
+                    # If session data is missing or user explicitly stopped the bot
+                    if not latest_session_data or latest_session_data.get('is_running', 0) == 0:
                         continue
                     
                     contract_id = latest_session_data.get('contract_id')
                     trade_start_time = latest_session_data.get('trade_start_time')
                     
                     if contract_id:
+                        # Check status of pending contract
                         if (time.time() - trade_start_time) >= 20: 
                             run_trading_job_for_user(latest_session_data, check_only=True)
                     
-                    elif now.second == 58:
+                    elif now.second == 58: # Check for new trade opportunity every minute
                         re_checked_session_data = get_session_status_from_db(email)
-                        if re_checked_session_data and not re_checked_session_data.get('contract_id'):
+                        if re_checked_session_data and not re_checked_session_data.get('contract_id') and re_checked_session_data.get('is_running', 0) == 1:
                             run_trading_job_for_user(re_checked_session_data, check_only=False)
             time.sleep(1) 
         except Exception as e:
-            print(f"❌ حدث خطأ غير متوقع في الحلقة الرئيسية: {e}")
+            print(f"❌ An unexpected error occurred in the main bot loop: {e}")
             time.sleep(5)
 
 # --- Streamlit App Configuration ---
@@ -387,12 +417,13 @@ if "bot_thread_started" not in st.session_state:
     st.session_state.bot_thread_started = False
 
 # --- Start Background Bot Thread ---
+# This thread will continuously run the bot_loop, which checks for all active sessions
 if not st.session_state.bot_thread_started:
     bot_thread = threading.Thread(target=bot_loop)
     bot_thread.daemon = True
     bot_thread.start()
     st.session_state.bot_thread_started = True
-    print("Bot thread started.")
+    print("Bot background thread started.")
 
 # --- Login Section ---
 if not st.session_state.logged_in:
@@ -400,9 +431,9 @@ if not st.session_state.logged_in:
     st.subheader("Login")
     login_form = st.form("login_form")
     email_input = login_form.text_input("Email")
-    submit_button = login_form.form_submit_button("Login")
+    submit_button_login = login_form.form_submit_button("Login") # Corrected name
     
-    if submit_button:
+    if submit_button_login:
         if is_user_active(email_input):
             st.session_state.logged_in = True
             st.session_state.user_email = email_input
@@ -421,20 +452,23 @@ if st.session_state.logged_in:
     # Check current bot status for the logged-in user
     is_user_bot_running = st.session_state.stats and st.session_state.stats.get('is_running', 0) == 1
     
-    # --- Always show the settings form and the control buttons ---
+    # --- Settings Form and Control Buttons ---
     with st.form("settings_and_control"):
         st.subheader("Bot Settings and Control")
+        
+        # Default values if no stats data exists
+        user_token_val = ""
+        base_amount_val = 0.5
+        tp_target_val = 20.0
+        max_consecutive_losses_val = 5
+
         if st.session_state.stats:
             user_token_val = st.session_state.stats['user_token']
             base_amount_val = st.session_state.stats['base_amount']
             tp_target_val = st.session_state.stats['tp_target']
             max_consecutive_losses_val = st.session_state.stats['max_consecutive_losses']
-        else:
-            user_token_val = ""
-            base_amount_val = 0.5
-            tp_target_val = 20.0
-            max_consecutive_losses_val = 5
         
+        # Disable input fields when bot is running
         user_token = st.text_input("Deriv API Token", type="password", value=user_token_val, disabled=is_user_bot_running)
         base_amount = st.number_input("Base Bet Amount", min_value=0.5, value=base_amount_val, step=0.1, disabled=is_user_bot_running)
         tp_target = st.number_input("Take Profit Target", min_value=10.0, value=tp_target_val, step=5.0, disabled=is_user_bot_running)
@@ -442,8 +476,10 @@ if st.session_state.logged_in:
         
         col_start, col_stop = st.columns(2)
         with col_start:
+            # The "Start Bot" button should only be active if the bot is NOT running
             start_button = st.form_submit_button("Start Bot", disabled=is_user_bot_running)
         with col_stop:
+            # The "Stop Bot" button should only be active if the bot IS running
             stop_button = st.form_submit_button("Stop Bot", disabled=not is_user_bot_running)
     
     if start_button:
@@ -461,9 +497,9 @@ if st.session_state.logged_in:
             st.rerun()
 
     if stop_button:
-        clear_session_data(st.session_state.user_email)
+        clear_session_data(st.session_state.user_email) # This will set is_running to 0
         st.info("⏸️ The bot has been stopped.")
-        st.session_state.stats = None
+        st.session_state.stats = None # Clear stats in session state as well
         st.rerun()
 
     st.markdown("---")
@@ -505,5 +541,5 @@ if st.session_state.logged_in:
         with stats_placeholder.container():
             st.info("The bot is currently stopped.")
             
-    time.sleep(1)
+    time.sleep(1) # Small delay to prevent excessive reruns and allow UI to update
     st.rerun()
