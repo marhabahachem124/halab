@@ -10,7 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data.db"
+DB_FILE = "trading_data66.db"
 trading_lock = threading.Lock()
 
 # --- Database & Utility Functions ---
@@ -296,13 +296,15 @@ def run_trading_job_for_user(session_data, check_only=False):
 
                 new_balance, _ = get_balance_and_currency(user_token)
                 if new_balance is not None and (float(new_balance) - float(initial_balance)) >= float(tp_target):
-                    print(f"🎉 User {email}: TP target (${tp_target}) reached. Stopping the bot.")
+                    print(f"🎉 User {email}: TP target (${tp_target}) reached. Stopping the bot and clearing data.")
                     update_is_running_status(email, 0)
+                    clear_session_data(email) # <-- ADDED
                     return
                 
                 if consecutive_losses >= max_consecutive_losses:
-                    print(f"🔴 User {email}: Max consecutive losses ({max_consecutive_losses}) reached. Stopping the bot.")
+                    print(f"🔴 User {email}: Max consecutive losses ({max_consecutive_losses}) reached. Stopping the bot and clearing data.")
                     update_is_running_status(email, 0)
+                    clear_session_data(email) # <-- ADDED
                     return
             else:
                 print(f"User {email}: Contract {contract_id} is still pending. Retrying next cycle.")
@@ -414,18 +416,16 @@ if "user_email" not in st.session_state:
     st.session_state.user_email = ""
 if "stats" not in st.session_state:
     st.session_state.stats = None
-if "bot_thread_started" not in st.session_state:
-    st.session_state.bot_thread_started = False
     
 # Call this at the start to ensure the database is ready
 create_table_if_not_exists()
 
 # --- Start Background Bot Thread ---
 # This part is still necessary to start the thread, but the logic inside the thread is what matters
-if not st.session_state.bot_thread_started:
+if "bot_thread" not in st.session_state:
     bot_thread = threading.Thread(target=bot_loop, daemon=True)
     bot_thread.start()
-    st.session_state.bot_thread_started = True
+    st.session_state.bot_thread = bot_thread
     print("Bot thread started.")
 
 # --- Login Section ---
