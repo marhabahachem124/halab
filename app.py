@@ -406,12 +406,23 @@ def bot_loop():
 st.set_page_config(page_title="Khoury Bot", layout="wide")
 st.title("Khoury Bot")
 
+# --- Initialize Session State ---
+# This block must be at the top of the script
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+if "user_email" not in st.session_state:
+    st.session_state.user_email = ""
+if "stats" not in st.session_state:
+    st.session_state.stats = None
+if "bot_thread_started" not in st.session_state:
+    st.session_state.bot_thread_started = False
+    
 # Call this at the start to ensure the database is ready
 create_table_if_not_exists()
 
 # --- Start Background Bot Thread ---
 # This part is still necessary to start the thread, but the logic inside the thread is what matters
-if "bot_thread_started" not in st.session_state:
+if not st.session_state.bot_thread_started:
     bot_thread = threading.Thread(target=bot_loop, daemon=True)
     bot_thread.start()
     st.session_state.bot_thread_started = True
