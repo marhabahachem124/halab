@@ -10,7 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data3.db" 
+DB_FILE = "trading_data111.db" 
 
 def create_connection():
     """Create a database connection to the SQLite database specified by DB_FILE"""
@@ -18,7 +18,7 @@ def create_connection():
         conn = sqlite3.connect(DB_FILE)
         return conn
     except sqlite3.Error as e:
-        st.error(f"❌ Database connection error: {e}")
+        print(f"❌ Database connection error: {e}") # Print to console
         return None
 
 def create_table_if_not_exists():
@@ -46,7 +46,7 @@ def create_table_if_not_exists():
             conn.commit()
             print("✅ 'sessions' table checked/created successfully.")
         except sqlite3.Error as e:
-            st.error(f"❌ Error creating table: {e}")
+            print(f"❌ Error creating table: {e}") # Print to console
         finally:
             conn.close()
 
@@ -61,10 +61,10 @@ def is_user_active(email):
             active_users = [line.strip() for line in file.readlines()]
             return email in active_users
     except FileNotFoundError:
-        st.error("❌ Error: 'user_ids.txt' file not found.")
+        print("❌ Error: 'user_ids.txt' file not found.") # Print to console
         return False
     except Exception as e:
-        st.error(f"❌ An error occurred while reading 'user_ids.txt': {e}")
+        print(f"❌ An error occurred while reading 'user_ids.txt': {e}") # Print to console
         return False
 
 # --- SQLite Session Functions ---
@@ -78,10 +78,10 @@ def start_new_session_in_db(email, settings):
                     INSERT OR REPLACE INTO sessions 
                     (email, user_token, base_amount, tp_target, max_consecutive_losses, current_amount)
                     VALUES (?, ?, ?, ?, ?, ?)
-                """, (email, settings["user_token"], settings["base_amount"], settings["tp_target"], settings["max_consecutive_losses"], settings["base_amount"]))
+                """, (email, settings["user_token"], float(settings["base_amount"]), float(settings["tp_target"]), settings["max_consecutive_losses"], float(settings["base_amount"])))
             print(f"✅ Session for {email} saved to database.")
         except sqlite3.Error as e:
-            st.error(f"❌ Error saving session to database: {e}")
+            print(f"❌ Error saving session to database: {e}") # Print to console
         finally:
             conn.close()
 
@@ -98,7 +98,7 @@ def get_session_status_from_db(email):
                     return dict(row)
                 return None
         except sqlite3.Error as e:
-            st.error(f"❌ Error fetching session from database: {e}")
+            print(f"❌ Error fetching session from database: {e}") # Print to console
             return None
         finally:
             conn.close()
@@ -117,7 +117,7 @@ def get_all_active_sessions():
                     sessions.append(dict(row))
                 return sessions
         except sqlite3.Error as e:
-            st.error(f"❌ Error fetching all sessions from database: {e}")
+            print(f"❌ Error fetching all sessions from database: {e}") # Print to console
             return []
         finally:
             conn.close()
@@ -134,10 +134,10 @@ def update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_a
                     initial_balance = COALESCE(?, initial_balance), contract_id = ?, trade_start_time = COALESCE(?, trade_start_time)
                 WHERE email = ?
                 """
-                conn.execute(update_query, (total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id, trade_start_time, email))
+                conn.execute(update_query, (total_wins, total_losses, float(current_amount), consecutive_losses, initial_balance, contract_id, trade_start_time, email))
             print(f"✅ Stats for {email} updated successfully.")
         except sqlite3.Error as e:
-            st.error(f"❌ Error updating session in database: {e}")
+            print(f"❌ Error updating session in database: {e}") # Print to console
         finally:
             conn.close()
 
@@ -150,7 +150,7 @@ def clear_session_data(email):
                 conn.execute("DELETE FROM sessions WHERE email=?", (email,))
             print(f"✅ Session for {email} deleted successfully.")
         except sqlite3.Error as e:
-            st.error(f"❌ Error deleting session from database: {e}")
+            print(f"❌ Error deleting session from database: {e}") # Print to console
         finally:
             conn.close()
 
@@ -164,13 +164,13 @@ def connect_websocket(user_token):
         ws.send(json.dumps(auth_req))
         auth_response = json.loads(ws.recv())
         if auth_response.get('error'):
-            print(f"❌ Authentication failed: {auth_response['error']['message']}")
+            print(f"❌ Authentication failed: {auth_response['error']['message']}") # Print to console
             ws.close()
             return None
         print("✅ WebSocket connection successful and authenticated.")
         return ws
     except Exception as e:
-        print(f"❌ WebSocket connection or authentication failed: {e}")
+        print(f"❌ WebSocket connection or authentication failed: {e}") # Print to console
         return None
 
 def get_balance_and_currency(user_token):
@@ -190,7 +190,7 @@ def get_balance_and_currency(user_token):
             return balance_info.get('balance'), balance_info.get('currency')
         return None, None
     except Exception as e:
-        print(f"❌ Error fetching balance: {e}")
+        print(f"❌ Error fetching balance: {e}") # Print to console
         return None, None
     finally:
         if ws and ws.connected:
@@ -206,7 +206,7 @@ def check_contract_status(ws, contract_id):
         response = json.loads(ws.recv())  
         return response.get('proposal_open_contract')
     except Exception as e:
-        print(f"❌ Error checking contract status: {e}")
+        print(f"❌ Error checking contract status: {e}") # Print to console
         return None
 
 def get_open_contracts(user_token):
@@ -228,7 +228,7 @@ def get_open_contracts(user_token):
         return None 
         
     except Exception as e:
-        print(f"❌ Error fetching open contracts: {e}")
+        print(f"❌ Error fetching open contracts: {e}") # Print to console
         return None
     finally:
         if ws and ws.connected:
@@ -247,7 +247,7 @@ def place_order(ws, proposal_id, amount):
         response = json.loads(ws.recv())  
         return response
     except Exception as e:
-        print(f"❌ Error placing order: {e}")
+        print(f"❌ Error placing order: {e}") # Print to console
         return {"error": {"message": "Order placement failed."}}
 
 # --- Trading Bot Logic ---
@@ -259,9 +259,9 @@ def analyse_data(df_ticks):
     open_5_ticks = last_5_ticks['price'].iloc[0]
     close_5_ticks = last_5_ticks['price'].iloc[-1]
     if close_5_ticks > open_5_ticks:
-        return "Sell", None
-    elif close_5_ticks < open_5_ticks:
         return "Buy", None
+    elif close_5_ticks < open_5_ticks:
+        return "Sell", None
     else:
         return "Neutral", "No clear signal."
 
@@ -269,12 +269,15 @@ def run_trading_job_for_user(session_data, check_only=False):
     """Executes the trading logic for a specific user's session."""
     email = session_data['email']
     user_token = session_data['user_token']
-    base_amount = session_data['base_amount']
-    tp_target = session_data['tp_target']
+    
+    # ⚠️ Use Decimal for financial calculations
+    base_amount = decimal.Decimal(str(session_data['base_amount']))
+    tp_target = decimal.Decimal(str(session_data['tp_target']))
+    current_amount = decimal.Decimal(str(session_data['current_amount']))
+
     max_consecutive_losses = session_data['max_consecutive_losses']
     total_wins = session_data['total_wins']
     total_losses = session_data['total_losses']
-    current_amount = session_data['current_amount']
     consecutive_losses = session_data['consecutive_losses']
     initial_balance = session_data['initial_balance']
     contract_id = session_data['contract_id']
@@ -284,11 +287,12 @@ def run_trading_job_for_user(session_data, check_only=False):
         try:
             ws = connect_websocket(user_token)
             if not ws:
+                print(f"❌ User {email}: Failed to connect for contract check.") # Print to console
                 return
 
             contract_info = check_contract_status(ws, contract_id)
             if contract_info and contract_info.get('is_sold'):
-                profit = float(contract_info.get('profit', 0))
+                profit = decimal.Decimal(str(contract_info.get('profit', 0)))
                 
                 if profit > 0:
                     print(f"🎉 User {email}: Trade won! Profit: ${profit:.2f}")
@@ -299,7 +303,8 @@ def run_trading_job_for_user(session_data, check_only=False):
                     print(f"🔴 User {email}: Trade lost. Loss: ${profit:.2f}")
                     consecutive_losses += 1
                     total_losses += 1
-                    next_bet = float(current_amount) * 2.2 
+                    # ⚠️ Use Decimal for multiplication
+                    next_bet = current_amount * decimal.Decimal('2.2')
                     current_amount = max(base_amount, next_bet)
                 else: 
                     print(f"➖ User {email}: Trade was a tie (zero profit). Amount remains ${current_amount:.2f}")
@@ -310,19 +315,22 @@ def run_trading_job_for_user(session_data, check_only=False):
                 update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id, trade_start_time=trade_start_time)
 
                 new_balance, _ = get_balance_and_currency(user_token)
-                if new_balance is not None and (float(new_balance) - float(initial_balance)) >= float(tp_target):
+                if new_balance is not None and (decimal.Decimal(str(new_balance)) - decimal.Decimal(str(initial_balance))) >= tp_target:
                     print(f"🎉 User {email}: TP target (${tp_target}) reached. Stopping the bot.")
+                    print(f"🎉 User {email}: TP target (${tp_target}) reached. Bot stopped.") # Print to console
                     clear_session_data(email)
                     return
                 
                 if consecutive_losses >= max_consecutive_losses:
                     print(f"🔴 User {email}: Max consecutive losses ({max_consecutive_losses}) reached. Stopping the bot.")
+                    print(f"🔴 User {email}: Max consecutive losses ({max_consecutive_losses}) reached. Bot stopped.") # Print to console
                     clear_session_data(email)
                     return
             else:
                 print(f"User {email}: Contract {contract_id} is still pending or not found. Retrying next cycle.")
         except Exception as e:
-            print(f"\n❌ An unexpected error occurred while processing pending contract for user {email}: {e}")
+            print(f"❌ An error occurred while processing pending contract for user {email}:") # Print to console
+            print(f"Exception: {e}") # Print to console
         finally:
             if ws and ws.connected:
                 ws.close()
@@ -333,15 +341,16 @@ def run_trading_job_for_user(session_data, check_only=False):
         try:
             ws = connect_websocket(user_token)
             if not ws:
+                print(f"❌ User {email}: Failed to connect for new trade.") # Print to console
                 return
 
             balance, currency = get_balance_and_currency(user_token)
             if balance is None:
-                print(f"❌ Failed to fetch balance for user {email}. Skipping trade job.")
+                print(f"❌ Failed to fetch balance for user {email}. Skipping trade job.") # Print to console
                 return
 
             if initial_balance == 0:
-                initial_balance = float(balance)
+                initial_balance = decimal.Decimal(str(balance))
                 update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
 
             req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
@@ -360,9 +369,12 @@ def run_trading_job_for_user(session_data, check_only=False):
                 
                 if signal in ['Buy', 'Sell']:
                     contract_type = "CALL" if signal == 'Buy' else "PUT"
+                    # ⚠️ Ensure amount is a float from Decimal for API request
+                    amount_float = float(current_amount.quantize(decimal.Decimal('0.01')))
+
                     proposal_req = {
                         "proposal": 1,
-                        "amount": float(current_amount),
+                        "amount": amount_float,
                         "basis": "stake",
                         "contract_type": contract_type,
                         "currency": currency,
@@ -375,20 +387,21 @@ def run_trading_job_for_user(session_data, check_only=False):
                     
                     if 'proposal' in proposal_response:
                         proposal_id = proposal_response['proposal']['id']
-                        order_response = place_order(ws, proposal_id, float(current_amount))
+                        order_response = place_order(ws, proposal_id, amount_float)
                         if 'buy' in order_response and 'contract_id' in order_response['buy']:
                             contract_id = order_response['buy']['contract_id']
                             trade_start_time = time.time()
                             update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id, trade_start_time=trade_start_time)
                             print(f"✅ User {email}: New trade placed successfully. Type: {contract_type}, Amount: {current_amount}")
                         else:
-                            print(f"❌ User {email}: Failed to place order. Response: {order_response}")
+                            print(f"❌ User {email}: Failed to place order. Response: {order_response}") # Print to console
                     else:
-                        print(f"❌ User {email}: Failed to get proposal. Response: {proposal_response}")
+                        print(f"❌ User {email}: Failed to get proposal. Response: {proposal_response}") # Print to console
             else:
-                print(f"❌ User {email}: Failed to get tick data.")
+                print(f"❌ User {email}: Failed to get tick data.") # Print to console
         except Exception as e:
-            print(f"\n❌ An unexpected error occurred in the trading job for user {email}: {e}")
+            print(f"❌ An error occurred while placing a new trade for user {email}:") # Print to console
+            print(f"Exception: {e}") # Print to console
         finally:
             if ws and ws.connected:
                 ws.close()
@@ -419,9 +432,7 @@ def bot_loop():
                         else:
                             print(f"User {latest_session_data['email']}: Contract {contract_id} is still pending. Waiting...")
                     
-                    # ⚠️ التعديل الرئيسي: تحقق إضافي قبل إطلاق الصفقة
                     elif now.second == 58:
-                        # الحصول على أحدث حالة للجلسة مرة أخرى لمنع حالة السباق
                         re_checked_session_data = get_session_status_from_db(session['email'])
                         if re_checked_session_data and not re_checked_session_data.get('contract_id'):
                             print(f"User {latest_session_data['email']}: No pending contract found. Initiating a new trade.")
@@ -431,7 +442,8 @@ def bot_loop():
                         
             time.sleep(1) 
         except Exception as e:
-            print(f"❌ حدث خطأ غير متوقع في الحلقة الرئيسية: {e}")
+            print(f"❌ A critical error occurred in the main bot loop:") # Print to console
+            print(f"Exception: {e}") # Print to console
             time.sleep(5)
 
 # --- Streamlit App Configuration ---
