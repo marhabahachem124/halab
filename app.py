@@ -257,9 +257,9 @@ def analyse_data(df_ticks):
 
     # Check for the specified patterns
     if trend_15_up and trend_5_up:
-        return "Buy", "Detected a strong uptrend signal (15 ticks and 5 ticks)."
+        return "Sell", "Detected a strong uptrend signal (15 ticks and 5 ticks)."
     elif trend_15_down and trend_5_down:
-        return "Sell", "Detected a strong downtrend signal (15 ticks and 5 ticks)."
+        return "Buy", "Detected a strong downtrend signal (15 ticks and 5 ticks)."
     else:
         return "Neutral", "No clear combined trend signal detected."
 
