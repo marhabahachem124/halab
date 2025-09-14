@@ -10,7 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data.db" # ⚠️ تم تغيير اسم الملف هنا
+DB_FILE = "trading_data12.db" 
 
 def create_connection():
     """Create a database connection to the SQLite database specified by DB_FILE"""
@@ -38,7 +38,8 @@ def create_table_if_not_exists():
                 current_amount REAL NOT NULL,
                 consecutive_losses INTEGER DEFAULT 0,
                 initial_balance REAL DEFAULT 0.0,
-                contract_id TEXT
+                contract_id TEXT,
+                trade_start_time REAL DEFAULT 0.0
             );
             """
             conn.execute(sql_create_table)
@@ -121,7 +122,7 @@ def get_all_active_sessions():
         finally:
             conn.close()
 
-def update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=None, contract_id=None):
+def update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=None, contract_id=None, trade_start_time=None):
     """Updates trading statistics and trade information for a user in the database."""
     conn = create_connection()
     if conn:
@@ -130,10 +131,10 @@ def update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_a
                 update_query = """
                 UPDATE sessions SET 
                     total_wins = ?, total_losses = ?, current_amount = ?, consecutive_losses = ?, 
-                    initial_balance = COALESCE(?, initial_balance), contract_id = ?
+                    initial_balance = COALESCE(?, initial_balance), contract_id = ?, trade_start_time = COALESCE(?, trade_start_time)
                 WHERE email = ?
                 """
-                conn.execute(update_query, (total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id, email))
+                conn.execute(update_query, (total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id, trade_start_time, email))
             print(f"✅ Stats for {email} updated successfully.")
         except sqlite3.Error as e:
             st.error(f"❌ Error updating session in database: {e}")
@@ -240,7 +241,7 @@ def analyse_data(df_ticks):
     else:
         return "Neutral", "No clear signal."
 
-def run_trading_job_for_user(session_data):
+def run_trading_job_for_user(session_data, check_only=False):
     """Executes the trading logic for a specific user's session."""
     email = session_data['email']
     user_token = session_data['user_token']
@@ -254,36 +255,37 @@ def run_trading_job_for_user(session_data):
     initial_balance = session_data['initial_balance']
     contract_id = session_data['contract_id']
     
-    if contract_id:
+    if check_only:
         ws = None
         try:
             ws = connect_websocket(user_token)
             if not ws:
                 return
 
-            print(f"User {email}: Found pending contract {contract_id}. Waiting 25 seconds to check status...")
-            time.sleep(25)
-            
             contract_info = check_contract_status(ws, contract_id)
             if contract_info and contract_info.get('is_sold'):
                 profit = float(contract_info.get('profit', 0))
                 
-                is_win = profit > 0
-                
-                if is_win:
+                # ⚠️ التعديل الرئيسي هنا للتعامل مع صفقة التعادل
+                if profit > 0:
                     print(f"🎉 User {email}: Trade won! Profit: ${profit:.2f}")
                     consecutive_losses = 0
                     total_wins += 1
                     current_amount = base_amount
-                else:
+                elif profit < 0:
                     print(f"🔴 User {email}: Trade lost. Loss: ${profit:.2f}")
                     consecutive_losses += 1
                     total_losses += 1
                     next_bet = float(current_amount) * 2.2 
                     current_amount = max(base_amount, next_bet)
+                else: # profit == 0 (صفقة تعادل)
+                    print(f"➖ User {email}: Trade was a tie (zero profit). Amount remains ${current_amount:.2f}")
+                    consecutive_losses = 0
+                    # لا يتم تغيير current_amount ولا إحصائيات الربح/الخسارة
                 
                 contract_id = None
-                update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
+                trade_start_time = 0.0 # reset time on completion
+                update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id, trade_start_time=trade_start_time)
 
                 new_balance, _ = get_balance_and_currency(user_token)
                 if new_balance is not None and (float(new_balance) - float(initial_balance)) >= float(tp_target):
@@ -304,7 +306,7 @@ def run_trading_job_for_user(session_data):
                 ws.close()
                 print(f"🔗 WebSocket connection closed for user {email}.")
     
-    elif not contract_id:
+    elif not check_only:
         ws = None
         try:
             ws = connect_websocket(user_token)
@@ -354,7 +356,8 @@ def run_trading_job_for_user(session_data):
                         order_response = place_order(ws, proposal_id, float(current_amount))
                         if 'buy' in order_response and 'contract_id' in order_response['buy']:
                             contract_id = order_response['buy']['contract_id']
-                            update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
+                            trade_start_time = time.time() # تسجيل الوقت الحالي
+                            update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id, trade_start_time=trade_start_time)
                             print(f"✅ User {email}: New trade placed successfully. Type: {contract_type}, Amount: {current_amount}")
                         else:
                             print(f"❌ User {email}: Failed to place order. Response: {order_response}")
@@ -375,22 +378,27 @@ def bot_loop():
     while True:
         try:
             now = datetime.now()
-            if now.second == 58:
-                active_sessions = get_all_active_sessions()
-                if active_sessions:
-                    for session in active_sessions:
-                        latest_session_data = get_session_status_from_db(session['email'])
-                        if latest_session_data and latest_session_data.get('contract_id') is None:
-                            print(f"User {latest_session_data['email']}: لا يوجد صفقة معلقة. بدء صفقة جديدة.")
-                            run_trading_job_for_user(latest_session_data)
-                        elif latest_session_data:
-                            print(f"User {latest_session_data['email']}: تم العثور على صفقة معلقة. التحقق من حالتها.")
-                            run_trading_job_for_user(latest_session_data)
-                        else:
-                            print(f"User {session['email']}: لم يتم العثور على بيانات الجلسة. تخطي.")
-                time.sleep(1)
-            else:
-                time.sleep(0.1)
+            active_sessions = get_all_active_sessions()
+            if active_sessions:
+                for session in active_sessions:
+                    latest_session_data = get_session_status_from_db(session['email'])
+                    
+                    if not latest_session_data:
+                        print(f"User {session['email']}: Session data not found. Skipping.")
+                        continue
+                    
+                    contract_id = latest_session_data.get('contract_id')
+                    trade_start_time = latest_session_data.get('trade_start_time')
+                    
+                    if contract_id and trade_start_time and (time.time() - trade_start_time) >= 25:
+                        print(f"User {latest_session_data['email']}: Found pending contract {contract_id}. Checking its status...")
+                        run_trading_job_for_user(latest_session_data, check_only=True)
+                    
+                    elif now.second == 58 and not contract_id:
+                        print(f"User {latest_session_data['email']}: No pending contract found. Initiating a new trade.")
+                        run_trading_job_for_user(latest_session_data, check_only=False)
+
+            time.sleep(1) 
         except Exception as e:
             print(f"❌ حدث خطأ غير متوقع في الحلقة الرئيسية: {e}")
             time.sleep(5)
