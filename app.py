@@ -259,9 +259,9 @@ def analyse_data(df_ticks):
     open_5_ticks = last_5_ticks['price'].iloc[0]
     close_5_ticks = last_5_ticks['price'].iloc[-1]
     if close_5_ticks > open_5_ticks:
-        return "Buy", None
-    elif close_5_ticks < open_5_ticks:
         return "Sell", None
+    elif close_5_ticks < open_5_ticks:
+        return "Buy", None
     else:
         return "Neutral", "No clear signal."
 
