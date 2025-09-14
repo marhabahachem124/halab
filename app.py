@@ -10,8 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data555.db"
-# A lock to prevent multiple trades from being initiated at the same time
+DB_FILE = "trading_data.db"
 trading_lock = threading.Lock()
 
 def create_connection():
@@ -60,24 +59,6 @@ def create_table_if_not_exists():
         finally:
             conn.close()
 
-# Call this function at the start of the script to ensure the table exists
-create_table_if_not_exists()
-
-# --- Authentication Logic ---
-def is_user_active(email):
-    """Checks if a user's email exists in the user_ids.txt file."""
-    try:
-        with open("user_ids.txt", "r") as file:
-            active_users = [line.strip() for line in file.readlines()]
-        return email in active_users
-    except FileNotFoundError:
-        st.error("❌ Error: 'user_ids.txt' file not found.")
-        return False
-    except Exception as e:
-        st.error(f"❌ An error occurred while reading 'user_ids.txt': {e}")
-        return False
-
-# --- SQLite Session Functions ---
 def start_new_session_in_db(email, settings):
     """Saves or updates user settings and initializes session data in the database."""
     conn = create_connection()
@@ -92,6 +73,19 @@ def start_new_session_in_db(email, settings):
             print(f"✅ Session for {email} saved to database and bot status set to running.")
         except sqlite3.Error as e:
             st.error(f"❌ Error saving session to database: {e}")
+        finally:
+            conn.close()
+
+def update_is_running_status(email, status):
+    """Updates the is_running status for a specific user."""
+    conn = create_connection()
+    if conn:
+        try:
+            with conn:
+                conn.execute("UPDATE sessions SET is_running = ? WHERE email = ?", (status, email))
+            print(f"✅ Bot status for {email} updated to {'running' if status == 1 else 'stopped'}.")
+        except sqlite3.Error as e:
+            st.error(f"❌ Error updating bot status for {email}: {e}")
         finally:
             conn.close()
 
@@ -114,7 +108,7 @@ def get_session_status_from_db(email):
     if conn:
         try:
             with conn:
-                conn.row_factory = sqlite3.Row  # This allows accessing columns by name
+                conn.row_factory = sqlite3.Row
                 cursor = conn.execute("SELECT * FROM sessions WHERE email=?", (email,))
                 row = cursor.fetchone()
                 if row:
@@ -142,6 +136,25 @@ def get_all_active_sessions():
         except sqlite3.Error as e:
             st.error(f"❌ Error fetching all sessions from database: {e}")
             return []
+        finally:
+            conn.close()
+
+def update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=None, contract_id=None, trade_start_time=None):
+    """Updates trading statistics and trade information for a user in the database."""
+    conn = create_connection()
+    if conn:
+        try:
+            with conn:
+                update_query = """
+                UPDATE sessions SET 
+                    total_wins = ?, total_losses = ?, current_amount = ?, consecutive_losses = ?, 
+                    initial_balance = COALESCE(?, initial_balance), contract_id = ?, trade_start_time = COALESCE(?, trade_start_time)
+                WHERE email = ?
+                """
+                conn.execute(update_query, (total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id, trade_start_time, email))
+            print(f"✅ Stats for {email} updated successfully.")
+        except sqlite3.Error as e:
+            st.error(f"❌ Error updating session in database: {e}")
         finally:
             conn.close()
 
@@ -287,7 +300,6 @@ def run_trading_job_for_user(session_data, check_only=False):
                 ws.close()
     
     elif not check_only:
-        # Acquire the lock to prevent a race condition
         with trading_lock:
             ws = None
             try:
@@ -376,6 +388,9 @@ def bot_loop():
 st.set_page_config(page_title="Khoury Bot", layout="wide")
 st.title("Khoury Bot")
 
+# Call this at the start to ensure the database is ready
+create_table_if_not_exists()
+
 # --- Initialize Session State ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -415,16 +430,13 @@ if st.session_state.logged_in:
     st.markdown("---")
     st.subheader(f"Welcome, {st.session_state.user_email}")
     
-    # Retrieve stats for the current user
     stats_data = get_session_status_from_db(st.session_state.user_email)
     st.session_state.stats = stats_data
     
-    # Check current bot status for the logged-in user
     is_user_bot_running = False
     if st.session_state.stats:
         is_user_bot_running = st.session_state.stats.get('is_running', 0) == 1
     
-    # --- Always show the settings form and the control buttons ---
     with st.form("settings_and_control"):
         st.subheader("Bot Settings and Control")
         user_token_val = ""
