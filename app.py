@@ -10,7 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data.db"
+DB_FILE = "trading_data701.db"
 trading_lock = threading.Lock()
 
 # --- Database & Utility Functions ---
@@ -47,7 +47,6 @@ def create_table_if_not_exists():
             """
             conn.execute(sql_create_sessions_table)
             
-            # Add the 'is_running' column if it doesn't exist
             cursor = conn.execute("PRAGMA table_info(sessions)")
             columns = [col[1] for col in cursor.fetchall()]
             if 'is_running' not in columns:
@@ -383,24 +382,30 @@ def bot_loop():
             now = datetime.now()
             active_sessions = get_all_active_sessions()
             
-            if active_sessions:
-                for session in active_sessions:
-                    email = session['email']
-                    
-                    latest_session_data = get_session_status_from_db(email)
-                    if not latest_session_data or latest_session_data.get('is_running') == 0:
-                        continue
-                    
-                    contract_id = latest_session_data.get('contract_id')
-                    trade_start_time = latest_session_data.get('trade_start_time')
-                    
-                    if contract_id:
-                        if (time.time() - trade_start_time) >= 35:
-                            run_trading_job_for_user(latest_session_data, check_only=True)
-                    
-                    elif not contract_id and now.second % 5 == 0:
-                        run_trading_job_for_user(latest_session_data, check_only=False)
-            
+            # The core of the logic change: The loop now monitors active sessions.
+            if not active_sessions:
+                print("❌ No active sessions found. Bot loop will stop.")
+                # This will break the while loop and end the thread's execution.
+                st.session_state.bot_thread_is_active = False
+                return
+                
+            for session in active_sessions:
+                email = session['email']
+                
+                latest_session_data = get_session_status_from_db(email)
+                if not latest_session_data or latest_session_data.get('is_running') == 0:
+                    continue
+                
+                contract_id = latest_session_data.get('contract_id')
+                trade_start_time = latest_session_data.get('trade_start_time')
+                
+                if contract_id:
+                    if (time.time() - trade_start_time) >= 35:
+                        run_trading_job_for_user(latest_session_data, check_only=True)
+                
+                elif not contract_id and now.second % 5 == 0:
+                    run_trading_job_for_user(latest_session_data, check_only=False)
+        
             time.sleep(1) 
         except Exception as e:
             print(f"❌ An unexpected error occurred in the main loop: {e}")
@@ -418,18 +423,21 @@ if "user_email" not in st.session_state:
     st.session_state.user_email = ""
 if "stats" not in st.session_state:
     st.session_state.stats = None
+if "bot_thread_is_active" not in st.session_state:
+    st.session_state.bot_thread_is_active = False
 if "bot_thread" not in st.session_state:
     st.session_state.bot_thread = None
-    
+
 create_table_if_not_exists()
 
-# This is a key change: we start the bot loop as a daemon thread once when the app is launched.
-# The bot will then manage its own state for each user.
-if st.session_state.bot_thread is None or not st.session_state.bot_thread.is_alive():
+# The main change: The thread is only started if it doesn't exist AND there's an active session.
+# This prevents it from starting until a user explicitly requests it.
+if (st.session_state.bot_thread is None or not st.session_state.bot_thread.is_alive()) and len(get_all_active_sessions()) > 0:
     bot_thread = threading.Thread(target=bot_loop, daemon=True)
     bot_thread.start()
     st.session_state.bot_thread = bot_thread
-    print("Bot thread started.")
+    st.session_state.bot_thread_is_active = True
+    print("Bot thread started from initial load due to active sessions.")
 
 # --- Login Section ---
 if not st.session_state.logged_in:
