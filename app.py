@@ -470,7 +470,6 @@ if st.session_state.logged_in:
             st.session_state.user_email = ""
             st.info("⏸️ The bot has been stopped. Session data has been cleared.")
             
-            # Stop the bot loop gracefully
             global BOT_ACTIVE_FLAG
             BOT_ACTIVE_FLAG = False
             
