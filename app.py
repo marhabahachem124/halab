@@ -411,7 +411,7 @@ def bot_loop():
                     trade_start_time = latest_session_data.get('trade_start_time')
                     
                     if contract_id:
-                        if (time.time() - trade_start_time) >= 55: 
+                        if (time.time() - trade_start_time) >= 51: 
                             run_trading_job_for_user(latest_session_data, check_only=True)
                     
                     elif now.second == 0:
