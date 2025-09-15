@@ -10,7 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data.db"
+DB_FILE = "trading_data112233.db"
 trading_lock = threading.Lock()
 
 # --- Database & Utility Functions ---
@@ -20,6 +20,7 @@ def create_connection():
         conn = sqlite3.connect(DB_FILE)
         return conn
     except sqlite3.Error as e:
+        # In a background process, we should log the error, not use st.error
         print(f"❌ Database connection error: {e}")
         return None
 
@@ -68,12 +69,12 @@ def is_any_session_running():
                 cursor = conn.execute("SELECT COUNT(*) FROM sessions WHERE is_running = 1")
                 count = cursor.fetchone()[0]
                 return count > 0
-            except sqlite3.Error as e:
-                print(f"❌ Error checking for active sessions: {e}")
-                return True
+        except sqlite3.Error as e:
+            print(f"❌ Error checking for active sessions: {e}")
+            return True # Return True to prevent creating a new loop on error
         finally:
             conn.close()
-    return True
+    return True # Assume an active session if a database connection fails
 
 def is_user_active(email):
     """Checks if a user's email exists in the user_ids.txt file."""
@@ -256,12 +257,12 @@ def place_order(ws, proposal_id, amount):
 # --- Trading Bot Logic ---
 def analyse_data(df_ticks):
     """
-    Analyzes tick data to generate a trading signal based on a 5-tick trend.
+    Analyzes tick data to generate a trading signal based on a 30-tick trend.
     """
     if len(df_ticks) < 5:
-        return "Neutral", "Insufficient data. Need at least 5 ticks."
+        return "Neutral", "Insufficient data. Need at least 30 ticks."
 
-    # Analyze the overall trend of the last 5 ticks
+    # Analyze the overall trend of the last 30 ticks
     last_5_ticks = df_ticks.tail(5).copy()
     
     # Check if the overall trend is up (last tick price > first tick price)
@@ -410,11 +411,9 @@ def bot_loop():
                     trade_start_time = latest_session_data.get('trade_start_time')
                     
                     if contract_id:
-                        # Check trade result after 15 seconds
                         if (time.time() - trade_start_time) >= 15: 
                             run_trading_job_for_user(latest_session_data, check_only=True)
                     
-                    # Start a new trade at second 0
                     elif now.second == 0:
                         re_checked_session_data = get_session_status_from_db(email)
                         if re_checked_session_data and not re_checked_session_data.get('contract_id'):
@@ -518,7 +517,7 @@ if st.session_state.logged_in:
     if stop_button:
         update_is_running_status(st.session_state.user_email, 0)
         clear_session_data(st.session_state.user_email)
-        st.info("⏸️ The bot has been stopped. Session data has been cleared.")
+        st.info("⏸ The bot has been stopped. Session data has been cleared.")
         st.session_state.logged_in = False
         st.session_state.user_email = ""
         st.rerun()
@@ -529,9 +528,9 @@ if st.session_state.logged_in:
     stats_placeholder = st.empty()
     
     if is_user_bot_running:
-        st.success("🟢 Your bot is **RUNNING**.")
+        st.success("🟢 Your bot is *RUNNING*.")
     else:
-        st.error("🔴 Your bot is **STOPPED**.")
+        st.error("🔴 Your bot is *STOPPED*.")
 
     if st.session_state.user_email:
         session_data = get_session_status_from_db(st.session_state.user_email)
@@ -557,7 +556,7 @@ if st.session_state.logged_in:
                 st.metric(label="Consecutive Losses", value=stats['consecutive_losses'])
             
             if stats['contract_id']:
-                st.warning("⚠️ A trade is pending. Stats will be updated after it's completed.")
+                st.warning("⚠ A trade is pending. Stats will be updated after it's completed.")
     else:
         with stats_placeholder.container():
             st.info("The bot is currently stopped.")
