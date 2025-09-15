@@ -13,11 +13,6 @@ from datetime import datetime
 DB_FILE = "trading_data.db"
 trading_lock = threading.Lock()
 
-# --- Global Flag for Bot State ---
-# This flag will be used to control the bot loop from the main thread.
-# This prevents the bot_loop from directly accessing st.session_state
-BOT_ACTIVE_FLAG = False
-
 # --- Database & Utility Functions ---
 def create_connection():
     """Create a database connection to the SQLite database specified by DB_FILE"""
@@ -381,9 +376,9 @@ def run_trading_job_for_user(session_data, check_only=False):
 
 def bot_loop():
     """Main loop that orchestrates trading jobs for all active sessions."""
-    global BOT_ACTIVE_FLAG
     print("🤖 Starting main bot loop...")
-    while BOT_ACTIVE_FLAG:
+    # Use st.session_state.is_bot_active to control the loop
+    while st.session_state.is_bot_active:
         try:
             now = datetime.now()
             active_sessions = get_all_active_sessions()
@@ -425,6 +420,9 @@ if "stats" not in st.session_state:
     st.session_state.stats = None
 if "bot_thread" not in st.session_state:
     st.session_state.bot_thread = None
+# Initialize the bot active state in session_state
+if "is_bot_active" not in st.session_state:
+    st.session_state.is_bot_active = False
     
 create_table_if_not_exists()
 
@@ -470,8 +468,8 @@ if st.session_state.logged_in:
             st.session_state.user_email = ""
             st.info("⏸️ The bot has been stopped. Session data has been cleared.")
             
-            global BOT_ACTIVE_FLAG
-            BOT_ACTIVE_FLAG = False
+            # Set the bot active state to False to stop the loop
+            st.session_state.is_bot_active = False
             
             st.rerun()
 
@@ -509,8 +507,8 @@ if st.session_state.logged_in:
                 }
                 start_new_session_in_db(st.session_state.user_email, settings)
                 
-                global BOT_ACTIVE_FLAG
-                BOT_ACTIVE_FLAG = True
+                # Set the bot active state to True to start the loop
+                st.session_state.is_bot_active = True
                 
                 if st.session_state.bot_thread is None or not st.session_state.bot_thread.is_alive():
                     bot_thread = threading.Thread(target=bot_loop, daemon=True)
