@@ -10,7 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data002.db"
+DB_FILE = "trading_data321.db"
 trading_lock = threading.Lock()
 
 # --- Database & Utility Functions ---
@@ -257,9 +257,9 @@ def analyse_data(df_ticks):
 
     # Check for the specified patterns
     if trend_15_up and trend_5_up:
-        return "Sell", "Detected a strong uptrend signal (15 ticks and 5 ticks)."
+        return "Buy", "Detected a strong uptrend signal (15 ticks and 5 ticks)."
     elif trend_15_down and trend_5_down:
-        return "Buy", "Detected a strong downtrend signal (15 ticks and 5 ticks)."
+        return "Sell", "Detected a strong downtrend signal (15 ticks and 5 ticks)."
     else:
         return "Neutral", "No clear combined trend signal detected."
 
@@ -309,13 +309,13 @@ def run_trading_job_for_user(session_data, check_only=False):
                 if new_balance is not None and (float(new_balance) - float(initial_balance)) >= float(tp_target):
                     print(f"🎉 User {email}: TP target (${tp_target}) reached. Stopping the bot and clearing data.")
                     update_is_running_status(email, 0)
-                    clear_session_data(email) # <-- ADDED
+                    clear_session_data(email) 
                     return
                 
                 if consecutive_losses >= max_consecutive_losses:
                     print(f"🔴 User {email}: Max consecutive losses ({max_consecutive_losses}) reached. Stopping the bot and clearing data.")
                     update_is_running_status(email, 0)
-                    clear_session_data(email) # <-- ADDED
+                    clear_session_data(email)
                     return
             else:
                 print(f"User {email}: Contract {contract_id} is still pending. Retrying next cycle.")
@@ -356,7 +356,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                         proposal_req = {
                             "proposal": 1, "amount": amount_rounded, "basis": "stake",
                             "contract_type": contract_type, "currency": currency,
-                            "duration": 5, "duration_unit": "t", "symbol": "R_100"
+                            "duration": 5, "duration_unit": "s", "symbol": "R_100"
                         }
                         ws.send(json.dumps(proposal_req))
                         proposal_response = json.loads(ws.recv())
@@ -502,8 +502,10 @@ if st.session_state.logged_in:
 
     if stop_button:
         update_is_running_status(st.session_state.user_email, 0)
-        st.info("⏸️ The bot has been stopped.")
-        st.session_state.stats = None
+        clear_session_data(st.session_state.user_email)
+        st.info("⏸️ The bot has been stopped. Session data has been cleared.")
+        st.session_state.logged_in = False
+        st.session_state.user_email = ""
         st.rerun()
 
     st.markdown("---")
