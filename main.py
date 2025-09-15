@@ -403,8 +403,6 @@ def run_streamlit_app():
     if "stats" not in st.session_state:
         st.session_state.stats = None
         
-    create_table_if_not_exists()
-
     if not st.session_state.logged_in:
         st.markdown("---")
         st.subheader("Login")
@@ -678,17 +676,23 @@ def run_main_router():
 def shutdown_handler(signum, frame):
     print("\nReceived shutdown signal. Terminating all processes...")
     try:
-        bot_process.terminate()
-        streamlit_process.terminate()
-        stats_process.terminate()
-        main_router_process.terminate()
-        bot_process.join()
-        streamlit_process.join()
-        stats_process.join()
-        main_router_process.join()
+        if 'bot_process' in globals() and bot_process.is_alive():
+            bot_process.terminate()
+        if 'streamlit_process' in globals() and streamlit_process.is_alive():
+            streamlit_process.terminate()
+        if 'stats_process' in globals() and stats_process.is_alive():
+            stats_process.terminate()
+        if 'main_router_process' in globals() and main_router_process.is_alive():
+            main_router_process.terminate()
+        
+        if 'bot_process' in globals(): bot_process.join()
+        if 'streamlit_process' in globals(): streamlit_process.join()
+        if 'stats_process' in globals(): stats_process.join()
+        if 'main_router_process' in globals(): main_router_process.join()
+        
         print("All processes terminated successfully.")
-    except NameError:
-        pass  # Processes were not yet defined
+    except Exception as e:
+        print(f"An error occurred during shutdown: {e}", file=sys.stderr)
     sys.exit(0)
 
 # --- Main Orchestrator ---
@@ -703,6 +707,9 @@ if __name__ == '__main__':
         print(f"❌ Missing required library: {e}. Please run 'pip install Flask streamlit websocket-client pandas'.", file=sys.stderr)
         sys.exit(1)
 
+    # Ensure the database tables are created at the very beginning
+    create_table_if_not_exists()
+    
     print("Starting all services... This may take a few moments.")
     
     # Start the bot loop in a separate process
@@ -710,7 +717,8 @@ if __name__ == '__main__':
     bot_process.start()
 
     # Start the Streamlit app in a separate process
-    streamlit_process = multiprocessing.Process(target=lambda: subprocess.run(["streamlit", "run", __file__], env={**os.environ, "STREAMLIT_SERVER_PORT": "8501"}))
+    # Using a specific port for Streamlit
+    streamlit_process = multiprocessing.Process(target=lambda: subprocess.run([sys.executable, "-m", "streamlit", "run", __file__, "--server.port", "8501", "--server.headless", "true"], env={**os.environ, "STREAMLIT_SERVER_PORT": "8501"}))
     streamlit_process.start()
 
     # Start the stats server (Flask) in a separate process
@@ -722,12 +730,35 @@ if __name__ == '__main__':
     main_router_process.start()
 
     # Wait for the main router to start and then open the browser
-    time.sleep(3) 
-    webbrowser.open("http://localhost:5000")
+    # Increased sleep time to ensure servers have enough time to start
+    time.sleep(5) 
+    try:
+        webbrowser.open("http://localhost:5000")
+        print("\nOpened main page in browser. If it doesn't load, try visiting http://localhost:5000 manually.")
+    except Exception as e:
+        print(f"Could not automatically open browser: {e}. Please visit http://localhost:5000 manually.", file=sys.stderr)
     
     # Keep the main script alive to manage child processes
     try:
         while True:
-            time.sleep(1)
+            # Check if child processes are alive and restart if necessary (optional, but can help with stability)
+            if not bot_process.is_alive():
+                print("Bot process died. Restarting...")
+                bot_process = multiprocessing.Process(target=bot_loop)
+                bot_process.start()
+            if not streamlit_process.is_alive():
+                print("Streamlit process died. Restarting...")
+                streamlit_process = multiprocessing.Process(target=lambda: subprocess.run([sys.executable, "-m", "streamlit", "run", __file__, "--server.port", "8501", "--server.headless", "true"], env={**os.environ, "STREAMLIT_SERVER_PORT": "8501"}))
+                streamlit_process.start()
+            if not stats_process.is_alive():
+                print("Stats server process died. Restarting...")
+                stats_process = multiprocessing.Process(target=run_stats_server)
+                stats_process.start()
+            if not main_router_process.is_alive():
+                print("Main router process died. Restarting...")
+                main_router_process = multiprocessing.Process(target=run_main_router)
+                main_router_process.start()
+                
+            time.sleep(5) # Check every 5 seconds
     except KeyboardInterrupt:
         shutdown_handler(None, None)
