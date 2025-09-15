@@ -20,7 +20,8 @@ def create_connection():
         conn = sqlite3.connect(DB_FILE)
         return conn
     except sqlite3.Error as e:
-        st.error(f"❌ Database connection error: {e}")
+        # In a background process, we should log the error, not use st.error
+        print(f"❌ Database connection error: {e}")
         return None
 
 def create_table_if_not_exists():
@@ -55,25 +56,12 @@ def create_table_if_not_exists():
             conn.commit()
             print("✅ 'sessions' table checked/created/updated successfully.")
         except sqlite3.Error as e:
-            st.error(f"❌ Error creating/updating table: {e}")
+            print(f"❌ Error creating/updating table: {e}")
         finally:
             conn.close()
 
-def is_user_active(email):
-    """Checks if a user's email exists in the user_ids.txt file."""
-    try:
-        with open("user_ids.txt", "r") as file:
-            active_users = [line.strip() for line in file.readlines()]
-        return email in active_users
-    except FileNotFoundError:
-        st.error("❌ Error: 'user_ids.txt' file not found.")
-        return False
-    except Exception as e:
-        st.error(f"❌ An error occurred while reading 'user_ids.txt': {e}")
-        return False
-
 def is_any_session_running():
-    """Checks if there is at least one active session in the database."""
+    """Checks if there is any active session in the database."""
     conn = create_connection()
     if conn:
         try:
@@ -83,10 +71,23 @@ def is_any_session_running():
                 return count > 0
         except sqlite3.Error as e:
             print(f"❌ Error checking for active sessions: {e}")
-            return False
+            return True # Return True to prevent creating a new loop on error
         finally:
             conn.close()
-    return False
+    return True # Assume an active session if a database connection fails
+
+def is_user_active(email):
+    """Checks if a user's email exists in the user_ids.txt file."""
+    try:
+        with open("user_ids.txt", "r") as file:
+            active_users = [line.strip() for line in file.readlines()]
+        return email in active_users
+    except FileNotFoundError:
+        print("❌ Error: 'user_ids.txt' file not found.")
+        return False
+    except Exception as e:
+        print(f"❌ An error occurred while reading 'user_ids.txt': {e}")
+        return False
 
 def start_new_session_in_db(email, settings):
     """Saves or updates user settings and initializes session data in the database."""
@@ -101,7 +102,7 @@ def start_new_session_in_db(email, settings):
                 """, (email, settings["user_token"], settings["base_amount"], settings["tp_target"], settings["max_consecutive_losses"], settings["base_amount"]))
             print(f"✅ Session for {email} saved to database and bot status set to running.")
         except sqlite3.Error as e:
-            st.error(f"❌ Error saving session to database: {e}")
+            print(f"❌ Error saving session to database: {e}")
         finally:
             conn.close()
 
@@ -114,7 +115,7 @@ def update_is_running_status(email, status):
                 conn.execute("UPDATE sessions SET is_running = ? WHERE email = ?", (status, email))
             print(f"✅ Bot status for {email} updated to {'running' if status == 1 else 'stopped'}.")
         except sqlite3.Error as e:
-            st.error(f"❌ Error updating bot status for {email}: {e}")
+            print(f"❌ Error updating bot status for {email}: {e}")
         finally:
             conn.close()
 
@@ -127,7 +128,7 @@ def clear_session_data(email):
                 conn.execute("DELETE FROM sessions WHERE email=?", (email,))
             print(f"✅ Session for {email} deleted successfully.")
         except sqlite3.Error as e:
-            st.error(f"❌ Error deleting session from database: {e}")
+            print(f"❌ Error deleting session from database: {e}")
         finally:
             conn.close()
 
@@ -144,7 +145,7 @@ def get_session_status_from_db(email):
                     return dict(row)
                 return None
         except sqlite3.Error as e:
-            st.error(f"❌ Error fetching session from database: {e}")
+            print(f"❌ Error fetching session from database: {e}")
             return None
         finally:
             conn.close()
@@ -163,7 +164,7 @@ def get_all_active_sessions():
                     sessions.append(dict(row))
                 return sessions
         except sqlite3.Error as e:
-            st.error(f"❌ Error fetching all sessions from database: {e}")
+            print(f"❌ Error fetching all sessions from database: {e}")
             return []
         finally:
             conn.close()
@@ -183,7 +184,7 @@ def update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_a
                 conn.execute(update_query, (total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id, trade_start_time, email))
             print(f"✅ Stats for {email} updated successfully.")
         except sqlite3.Error as e:
-            st.error(f"❌ Error updating session in database: {e}")
+            print(f"❌ Error updating session in database: {e}")
         finally:
             conn.close()
 
@@ -261,10 +262,13 @@ def analyse_data(df_ticks):
     if len(df_ticks) < 30:
         return "Neutral", "Insufficient data. Need at least 30 ticks."
 
+    # Analyze the overall trend of the last 30 ticks
     last_30_ticks = df_ticks.tail(30).copy()
     
+    # Check if the overall trend is up (last tick price > first tick price)
     if last_30_ticks.iloc[-1]['price'] > last_30_ticks.iloc[0]['price']:
         return "Buy", "Detected a 30-tick uptrend."
+    # Check if the overall trend is down (last tick price < first tick price)
     elif last_30_ticks.iloc[-1]['price'] < last_30_ticks.iloc[0]['price']:
         return "Sell", "Detected a 30-tick downtrend."
     else:
@@ -331,7 +335,7 @@ def run_trading_job_for_user(session_data, check_only=False):
         finally:
             if ws and ws.connected:
                 ws.close()
-            
+    
     elif not check_only:
         with trading_lock:
             ws = None
@@ -379,8 +383,8 @@ def run_trading_job_for_user(session_data, check_only=False):
                                 print(f"❌ User {email}: Failed to place order. Response: {order_response}")
                         else:
                             print(f"❌ User {email}: Failed to get proposal. Response: {proposal_response}")
-                    else:
-                        print(f"❌ User {email}: Failed to get tick data.")
+                else:
+                    print(f"❌ User {email}: Failed to get tick data.")
             except Exception as e:
                 print(f"\n❌ An unexpected error occurred in the trading job for user {email}: {e}")
             finally:
@@ -395,37 +399,27 @@ def bot_loop():
             now = datetime.now()
             active_sessions = get_all_active_sessions()
             
-            # If there are no active sessions, wait for 1 second and check again
-            if not active_sessions:
-                print("Bot is idle. No active sessions found. Waiting...")
-                time.sleep(1)
-                continue
-            
-            # Process each active session
-            for session in active_sessions:
-                email = session['email']
-                
-                # Re-fetch the latest data to avoid using stale information
-                latest_session_data = get_session_status_from_db(email)
-                if not latest_session_data or latest_session_data.get('is_running') == 0:
-                    continue
-                
-                contract_id = latest_session_data.get('contract_id')
-                trade_start_time = latest_session_data.get('trade_start_time')
-                
-                # Check for pending trades
-                if contract_id:
-                    if (time.time() - trade_start_time) >= 40:
-                        run_trading_job_for_user(latest_session_data, check_only=True)
-                
-                # Place a new trade if no trade is pending and it's the right time
-                elif now.second == 58:
-                    re_checked_session_data = get_session_status_from_db(email)
-                    if re_checked_session_data and not re_checked_session_data.get('contract_id'):
-                        run_trading_job_for_user(re_checked_session_data, check_only=False)
+            if active_sessions:
+                for session in active_sessions:
+                    email = session['email']
+                    
+                    latest_session_data = get_session_status_from_db(email)
+                    if not latest_session_data or latest_session_data.get('is_running') == 0:
+                        continue
+                    
+                    contract_id = latest_session_data.get('contract_id')
+                    trade_start_time = latest_session_data.get('trade_start_time')
+                    
+                    if contract_id:
+                        if (time.time() - trade_start_time) >= 40: 
+                            run_trading_job_for_user(latest_session_data, check_only=True)
+                    
+                    elif now.second == 58:
+                        re_checked_session_data = get_session_status_from_db(email)
+                        if re_checked_session_data and not re_checked_session_data.get('contract_id'):
+                            run_trading_job_for_user(re_checked_session_data, check_only=False)
             
             time.sleep(1) 
-            
         except Exception as e:
             print(f"❌ حدث خطأ غير متوقع في الحلقة الرئيسية: {e}")
             time.sleep(5)
@@ -433,7 +427,6 @@ def bot_loop():
 # --- Streamlit App Configuration ---
 st.set_page_config(page_title="Khoury Bot", layout="wide")
 st.title("Khoury Bot")
-create_table_if_not_exists()
 
 # --- Initialize Session State ---
 if "logged_in" not in st.session_state:
@@ -442,10 +435,10 @@ if "user_email" not in st.session_state:
     st.session_state.user_email = ""
 if "stats" not in st.session_state:
     st.session_state.stats = None
+    
+create_table_if_not_exists()
 
 # --- Start Background Bot Thread ---
-# هذا الكود يمنع تشغيل حلقة جديدة إذا كانت هناك جلسة قيد التشغيل بالفعل
-# ويستخدم st.session_state لضمان أن الخيط لا يتم إنشاؤه في كل مرة يتم فيها تحديث الصفحة
 if not is_any_session_running():
     if "bot_thread" not in st.session_state:
         bot_thread = threading.Thread(target=bot_loop, daemon=True)
