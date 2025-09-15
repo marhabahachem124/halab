@@ -47,6 +47,7 @@ def create_table_if_not_exists():
             """
             conn.execute(sql_create_sessions_table)
             
+            # Add the 'is_running' column if it doesn't exist
             cursor = conn.execute("PRAGMA table_info(sessions)")
             columns = [col[1] for col in cursor.fetchall()]
             if 'is_running' not in columns:
@@ -377,8 +378,7 @@ def run_trading_job_for_user(session_data, check_only=False):
 def bot_loop():
     """Main loop that orchestrates trading jobs for all active sessions."""
     print("🤖 Starting main bot loop...")
-    # Use st.session_state.is_bot_active to control the loop
-    while st.session_state.is_bot_active:
+    while True:
         try:
             now = datetime.now()
             active_sessions = get_all_active_sessions()
@@ -420,11 +420,16 @@ if "stats" not in st.session_state:
     st.session_state.stats = None
 if "bot_thread" not in st.session_state:
     st.session_state.bot_thread = None
-# Initialize the bot active state in session_state
-if "is_bot_active" not in st.session_state:
-    st.session_state.is_bot_active = False
     
 create_table_if_not_exists()
+
+# This is a key change: we start the bot loop as a daemon thread once when the app is launched.
+# The bot will then manage its own state for each user.
+if st.session_state.bot_thread is None or not st.session_state.bot_thread.is_alive():
+    bot_thread = threading.Thread(target=bot_loop, daemon=True)
+    bot_thread.start()
+    st.session_state.bot_thread = bot_thread
+    print("Bot thread started.")
 
 # --- Login Section ---
 if not st.session_state.logged_in:
@@ -467,10 +472,6 @@ if st.session_state.logged_in:
             st.session_state.logged_in = False
             st.session_state.user_email = ""
             st.info("⏸️ The bot has been stopped. Session data has been cleared.")
-            
-            # Set the bot active state to False to stop the loop
-            st.session_state.is_bot_active = False
-            
             st.rerun()
 
     else:
@@ -506,15 +507,6 @@ if st.session_state.logged_in:
                     "max_consecutive_losses": max_consecutive_losses
                 }
                 start_new_session_in_db(st.session_state.user_email, settings)
-                
-                # Set the bot active state to True to start the loop
-                st.session_state.is_bot_active = True
-                
-                if st.session_state.bot_thread is None or not st.session_state.bot_thread.is_alive():
-                    bot_thread = threading.Thread(target=bot_loop, daemon=True)
-                    bot_thread.start()
-                    st.session_state.bot_thread = bot_thread
-                
                 st.success("✅ Bot started successfully! Please wait for the stats to update.")
                 st.rerun()
 
