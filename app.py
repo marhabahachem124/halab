@@ -10,7 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data701.db"
+DB_FILE = "trading_data.db"
 trading_lock = threading.Lock()
 
 # --- Database & Utility Functions ---
@@ -71,6 +71,22 @@ def is_user_active(email):
     except Exception as e:
         st.error(f"❌ An error occurred while reading 'user_ids.txt': {e}")
         return False
+
+def is_any_session_running():
+    """Checks if there is at least one active session in the database."""
+    conn = create_connection()
+    if conn:
+        try:
+            with conn:
+                cursor = conn.execute("SELECT COUNT(*) FROM sessions WHERE is_running = 1")
+                count = cursor.fetchone()[0]
+                return count > 0
+        except sqlite3.Error as e:
+            print(f"❌ Error checking for active sessions: {e}")
+            return False
+        finally:
+            conn.close()
+    return False
 
 def start_new_session_in_db(email, settings):
     """Saves or updates user settings and initializes session data in the database."""
@@ -245,13 +261,10 @@ def analyse_data(df_ticks):
     if len(df_ticks) < 30:
         return "Neutral", "Insufficient data. Need at least 30 ticks."
 
-    # Analyze the overall trend of the last 30 ticks
     last_30_ticks = df_ticks.tail(30).copy()
     
-    # Check if the overall trend is up (last tick price > first tick price)
     if last_30_ticks.iloc[-1]['price'] > last_30_ticks.iloc[0]['price']:
         return "Buy", "Detected a 30-tick uptrend."
-    # Check if the overall trend is down (last tick price < first tick price)
     elif last_30_ticks.iloc[-1]['price'] < last_30_ticks.iloc[0]['price']:
         return "Sell", "Detected a 30-tick downtrend."
     else:
@@ -318,7 +331,7 @@ def run_trading_job_for_user(session_data, check_only=False):
         finally:
             if ws and ws.connected:
                 ws.close()
-    
+            
     elif not check_only:
         with trading_lock:
             ws = None
@@ -366,8 +379,8 @@ def run_trading_job_for_user(session_data, check_only=False):
                                 print(f"❌ User {email}: Failed to place order. Response: {order_response}")
                         else:
                             print(f"❌ User {email}: Failed to get proposal. Response: {proposal_response}")
-                else:
-                    print(f"❌ User {email}: Failed to get tick data.")
+                    else:
+                        print(f"❌ User {email}: Failed to get tick data.")
             except Exception as e:
                 print(f"\n❌ An unexpected error occurred in the trading job for user {email}: {e}")
             finally:
@@ -382,16 +395,17 @@ def bot_loop():
             now = datetime.now()
             active_sessions = get_all_active_sessions()
             
-            # The core of the logic change: The loop now monitors active sessions.
+            # If there are no active sessions, wait for 1 second and check again
             if not active_sessions:
-                print("❌ No active sessions found. Bot loop will stop.")
-                # This will break the while loop and end the thread's execution.
-                st.session_state.bot_thread_is_active = False
-                return
-                
+                print("Bot is idle. No active sessions found. Waiting...")
+                time.sleep(1)
+                continue
+            
+            # Process each active session
             for session in active_sessions:
                 email = session['email']
                 
+                # Re-fetch the latest data to avoid using stale information
                 latest_session_data = get_session_status_from_db(email)
                 if not latest_session_data or latest_session_data.get('is_running') == 0:
                     continue
@@ -399,22 +413,27 @@ def bot_loop():
                 contract_id = latest_session_data.get('contract_id')
                 trade_start_time = latest_session_data.get('trade_start_time')
                 
+                # Check for pending trades
                 if contract_id:
-                    if (time.time() - trade_start_time) >= 35:
+                    if (time.time() - trade_start_time) >= 40:
                         run_trading_job_for_user(latest_session_data, check_only=True)
                 
-                elif not contract_id and now.second % 5 == 0:
-                    run_trading_job_for_user(latest_session_data, check_only=False)
-        
+                # Place a new trade if no trade is pending and it's the right time
+                elif now.second == 58:
+                    re_checked_session_data = get_session_status_from_db(email)
+                    if re_checked_session_data and not re_checked_session_data.get('contract_id'):
+                        run_trading_job_for_user(re_checked_session_data, check_only=False)
+            
             time.sleep(1) 
+            
         except Exception as e:
-            print(f"❌ An unexpected error occurred in the main loop: {e}")
+            print(f"❌ حدث خطأ غير متوقع في الحلقة الرئيسية: {e}")
             time.sleep(5)
-    print("🤖 Bot loop has stopped.")
 
 # --- Streamlit App Configuration ---
 st.set_page_config(page_title="Khoury Bot", layout="wide")
 st.title("Khoury Bot")
+create_table_if_not_exists()
 
 # --- Initialize Session State ---
 if "logged_in" not in st.session_state:
@@ -423,21 +442,18 @@ if "user_email" not in st.session_state:
     st.session_state.user_email = ""
 if "stats" not in st.session_state:
     st.session_state.stats = None
-if "bot_thread_is_active" not in st.session_state:
-    st.session_state.bot_thread_is_active = False
-if "bot_thread" not in st.session_state:
-    st.session_state.bot_thread = None
 
-create_table_if_not_exists()
-
-# The main change: The thread is only started if it doesn't exist AND there's an active session.
-# This prevents it from starting until a user explicitly requests it.
-if (st.session_state.bot_thread is None or not st.session_state.bot_thread.is_alive()) and len(get_all_active_sessions()) > 0:
-    bot_thread = threading.Thread(target=bot_loop, daemon=True)
-    bot_thread.start()
-    st.session_state.bot_thread = bot_thread
-    st.session_state.bot_thread_is_active = True
-    print("Bot thread started from initial load due to active sessions.")
+# --- Start Background Bot Thread ---
+# هذا الكود يمنع تشغيل حلقة جديدة إذا كانت هناك جلسة قيد التشغيل بالفعل
+# ويستخدم st.session_state لضمان أن الخيط لا يتم إنشاؤه في كل مرة يتم فيها تحديث الصفحة
+if not is_any_session_running():
+    if "bot_thread" not in st.session_state:
+        bot_thread = threading.Thread(target=bot_loop, daemon=True)
+        bot_thread.start()
+        st.session_state.bot_thread = bot_thread
+        print("Bot thread started.")
+else:
+    print("A session is already running. No new bot loop will be created.")
 
 # --- Login Section ---
 if not st.session_state.logged_in:
@@ -459,70 +475,70 @@ if not st.session_state.logged_in:
 if st.session_state.logged_in:
     st.markdown("---")
     st.subheader(f"Welcome, {st.session_state.user_email}")
-
+    
     stats_data = get_session_status_from_db(st.session_state.user_email)
     st.session_state.stats = stats_data
     
     is_user_bot_running = False
     if st.session_state.stats:
         is_user_bot_running = st.session_state.stats.get('is_running', 0) == 1
-
-    if is_user_bot_running:
-        st.success("🟢 Your bot is **RUNNING**.")
+    
+    with st.form("settings_and_control"):
+        st.subheader("Bot Settings and Control")
+        user_token_val = ""
+        base_amount_val = 0.5
+        tp_target_val = 20.0
+        max_consecutive_losses_val = 5
         
-        with st.form("control_buttons"):
-            st.subheader("Bot Control")
-            stop_button = st.form_submit_button("Stop Bot", disabled=False)
+        if st.session_state.stats:
+            user_token_val = st.session_state.stats['user_token']
+            base_amount_val = st.session_state.stats['base_amount']
+            tp_target_val = st.session_state.stats['tp_target']
+            max_consecutive_losses_val = st.session_state.stats['max_consecutive_losses']
         
-        if stop_button:
-            update_is_running_status(st.session_state.user_email, 0)
-            clear_session_data(st.session_state.user_email)
-            st.session_state.logged_in = False
-            st.session_state.user_email = ""
-            st.info("⏸️ The bot has been stopped. Session data has been cleared.")
+        user_token = st.text_input("Deriv API Token", type="password", value=user_token_val, disabled=is_user_bot_running)
+        base_amount = st.number_input("Base Bet Amount", min_value=0.5, value=base_amount_val, step=0.1, disabled=is_user_bot_running)
+        tp_target = st.number_input("Take Profit Target", min_value=10.0, value=tp_target_val, step=5.0, disabled=is_user_bot_running)
+        max_consecutive_losses = st.number_input("Max Consecutive Losses", min_value=1, value=max_consecutive_losses_val, step=1, disabled=is_user_bot_running)
+        
+        col_start, col_stop = st.columns(2)
+        with col_start:
+            start_button = st.form_submit_button("Start Bot", disabled=is_user_bot_running)
+        with col_stop:
+            stop_button = st.form_submit_button("Stop Bot", disabled=not is_user_bot_running)
+    
+    if start_button:
+        if not user_token:
+            st.error("Please enter a Deriv API Token to start the bot.")
+        else:
+            settings = {
+                "user_token": user_token,
+                "base_amount": base_amount,
+                "tp_target": tp_target,
+                "max_consecutive_losses": max_consecutive_losses
+            }
+            start_new_session_in_db(st.session_state.user_email, settings)
+            st.success("✅ Bot started successfully! Please wait for the stats to update.")
             st.rerun()
 
-    else:
-        st.error("🔴 Your bot is **STOPPED**.")
-        with st.form("settings_and_control"):
-            st.subheader("Bot Settings and Control")
-            user_token_val = ""
-            base_amount_val = 0.5
-            tp_target_val = 20.0
-            max_consecutive_losses_val = 5
-            
-            if st.session_state.stats:
-                user_token_val = st.session_state.stats['user_token']
-                base_amount_val = st.session_state.stats['base_amount']
-                tp_target_val = st.session_state.stats['tp_target']
-                max_consecutive_losses_val = st.session_state.stats['max_consecutive_losses']
-            
-            user_token = st.text_input("Deriv API Token", type="password", value=user_token_val, disabled=False)
-            base_amount = st.number_input("Base Bet Amount", min_value=0.5, value=base_amount_val, step=0.1, disabled=False)
-            tp_target = st.number_input("Take Profit Target", min_value=10.0, value=tp_target_val, step=5.0, disabled=False)
-            max_consecutive_losses = st.number_input("Max Consecutive Losses", min_value=1, value=max_consecutive_losses_val, step=1, disabled=False)
-            
-            start_button = st.form_submit_button("Start Bot")
-            
-        if start_button:
-            if not user_token:
-                st.error("Please enter a Deriv API Token to start the bot.")
-            else:
-                settings = {
-                    "user_token": user_token,
-                    "base_amount": base_amount,
-                    "tp_target": tp_target,
-                    "max_consecutive_losses": max_consecutive_losses
-                }
-                start_new_session_in_db(st.session_state.user_email, settings)
-                st.success("✅ Bot started successfully! Please wait for the stats to update.")
-                st.rerun()
+    if stop_button:
+        update_is_running_status(st.session_state.user_email, 0)
+        clear_session_data(st.session_state.user_email)
+        st.info("⏸️ The bot has been stopped. Session data has been cleared.")
+        st.session_state.logged_in = False
+        st.session_state.user_email = ""
+        st.rerun()
 
     st.markdown("---")
     st.subheader("Statistics")
-    
+
     stats_placeholder = st.empty()
     
+    if is_user_bot_running:
+        st.success("🟢 Your bot is **RUNNING**.")
+    else:
+        st.error("🔴 Your bot is **STOPPED**.")
+
     if st.session_state.user_email:
         session_data = get_session_status_from_db(st.session_state.user_email)
         if session_data:
@@ -530,7 +546,7 @@ if st.session_state.logged_in:
             balance, _ = get_balance_and_currency(user_token)
             if balance is not None:
                 st.metric(label="Current Balance", value=f"${float(balance):.2f}")
-    
+
     if st.session_state.stats:
         with stats_placeholder.container():
             stats = st.session_state.stats
@@ -551,7 +567,6 @@ if st.session_state.logged_in:
     else:
         with stats_placeholder.container():
             st.info("The bot is currently stopped.")
-    
-    if is_user_bot_running:
-        time.sleep(1)
-        st.rerun()
+            
+    time.sleep(1)
+    st.rerun()
