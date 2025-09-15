@@ -20,7 +20,6 @@ def create_connection():
         conn = sqlite3.connect(DB_FILE)
         return conn
     except sqlite3.Error as e:
-        # In a background process, we should log the error, not use st.error
         print(f"❌ Database connection error: {e}")
         return None
 
@@ -69,12 +68,12 @@ def is_any_session_running():
                 cursor = conn.execute("SELECT COUNT(*) FROM sessions WHERE is_running = 1")
                 count = cursor.fetchone()[0]
                 return count > 0
-        except sqlite3.Error as e:
-            print(f"❌ Error checking for active sessions: {e}")
-            return True # Return True to prevent creating a new loop on error
+            except sqlite3.Error as e:
+                print(f"❌ Error checking for active sessions: {e}")
+                return True
         finally:
             conn.close()
-    return True # Assume an active session if a database connection fails
+    return True
 
 def is_user_active(email):
     """Checks if a user's email exists in the user_ids.txt file."""
@@ -257,22 +256,22 @@ def place_order(ws, proposal_id, amount):
 # --- Trading Bot Logic ---
 def analyse_data(df_ticks):
     """
-    Analyzes tick data to generate a trading signal based on a 30-tick trend.
+    Analyzes tick data to generate a trading signal based on a 5-tick trend.
     """
-    if len(df_ticks) < 30:
-        return "Neutral", "Insufficient data. Need at least 30 ticks."
+    if len(df_ticks) < 5:
+        return "Neutral", "Insufficient data. Need at least 5 ticks."
 
-    # Analyze the overall trend of the last 30 ticks
-    last_30_ticks = df_ticks.tail(30).copy()
+    # Analyze the overall trend of the last 5 ticks
+    last_5_ticks = df_ticks.tail(5).copy()
     
     # Check if the overall trend is up (last tick price > first tick price)
-    if last_30_ticks.iloc[-1]['price'] > last_30_ticks.iloc[0]['price']:
-        return "Buy", "Detected a 30-tick uptrend."
+    if last_5_ticks.iloc[-1]['price'] > last_5_ticks.iloc[0]['price']:
+        return "Buy", "Detected a 5-tick uptrend."
     # Check if the overall trend is down (last tick price < first tick price)
-    elif last_30_ticks.iloc[-1]['price'] < last_30_ticks.iloc[0]['price']:
-        return "Sell", "Detected a 30-tick downtrend."
+    elif last_5_ticks.iloc[-1]['price'] < last_5_ticks.iloc[0]['price']:
+        return "Sell", "Detected a 5-tick downtrend."
     else:
-        return "Neutral", "No clear 30-tick trend detected."
+        return "Neutral", "No clear 5-tick trend detected."
 
 def run_trading_job_for_user(session_data, check_only=False):
     """Executes the trading logic for a specific user's session."""
@@ -350,7 +349,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                     initial_balance = float(balance)
                     update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
                 
-                req = {"ticks_history": "R_100", "end": "latest", "count": 30, "style": "ticks"}
+                req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
                 ws.send(json.dumps(req))
                 tick_data = None
                 while not tick_data:
@@ -411,10 +410,12 @@ def bot_loop():
                     trade_start_time = latest_session_data.get('trade_start_time')
                     
                     if contract_id:
-                        if (time.time() - trade_start_time) >= 40: 
+                        # Check trade result after 15 seconds
+                        if (time.time() - trade_start_time) >= 15: 
                             run_trading_job_for_user(latest_session_data, check_only=True)
                     
-                    elif now.second == 58:
+                    # Start a new trade at second 0
+                    elif now.second == 0:
                         re_checked_session_data = get_session_status_from_db(email)
                         if re_checked_session_data and not re_checked_session_data.get('contract_id'):
                             run_trading_job_for_user(re_checked_session_data, check_only=False)
