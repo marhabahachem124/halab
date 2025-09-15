@@ -414,7 +414,7 @@ def bot_loop():
                         if (time.time() - trade_start_time) >= 15: 
                             run_trading_job_for_user(latest_session_data, check_only=True)
                     
-                    elif now.second == 0:
+                    elif now.second == 5:
                         re_checked_session_data = get_session_status_from_db(email)
                         if re_checked_session_data and not re_checked_session_data.get('contract_id'):
                             run_trading_job_for_user(re_checked_session_data, check_only=False)
