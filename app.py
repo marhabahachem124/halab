@@ -8,10 +8,8 @@ import decimal
 import sqlite3
 import pandas as pd
 from datetime import datetime
-import subprocess
-import webbrowser
-import sys
 import multiprocessing
+import sys
 import signal
 
 # --- SQLite Database Configuration ---
@@ -20,6 +18,7 @@ trading_lock = threading.Lock()
 
 # --- Database & Utility Functions ---
 def create_connection():
+    """Create a database connection to the SQLite database specified by DB_FILE"""
     try:
         conn = sqlite3.connect(DB_FILE)
         return conn
@@ -28,6 +27,7 @@ def create_connection():
         return None
 
 def create_table_if_not_exists():
+    """Create the sessions table if it does not exist and add new columns."""
     conn = create_connection()
     if conn:
         try:
@@ -63,6 +63,7 @@ def create_table_if_not_exists():
             conn.close()
 
 def is_user_active(email):
+    """Checks if a user's email exists in the user_ids.txt file."""
     try:
         with open("user_ids.txt", "r") as file:
             active_users = [line.strip() for line in file.readlines()]
@@ -75,6 +76,7 @@ def is_user_active(email):
         return False
 
 def start_new_session_in_db(email, settings):
+    """Saves or updates user settings and initializes session data in the database."""
     conn = create_connection()
     if conn:
         try:
@@ -91,6 +93,7 @@ def start_new_session_in_db(email, settings):
             conn.close()
 
 def update_is_running_status(email, status):
+    """Updates the is_running status for a specific user."""
     conn = create_connection()
     if conn:
         try:
@@ -103,6 +106,7 @@ def update_is_running_status(email, status):
             conn.close()
 
 def clear_session_data(email):
+    """Deletes a user's session data from the database."""
     conn = create_connection()
     if conn:
         try:
@@ -115,6 +119,7 @@ def clear_session_data(email):
             conn.close()
 
 def get_session_status_from_db(email):
+    """Retrieves the current session status for a given email from the database."""
     conn = create_connection()
     if conn:
         try:
@@ -132,6 +137,7 @@ def get_session_status_from_db(email):
             conn.close()
 
 def get_all_active_sessions():
+    """Fetches all currently active trading sessions from the database."""
     conn = create_connection()
     if conn:
         try:
@@ -150,6 +156,7 @@ def get_all_active_sessions():
             conn.close()
 
 def update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=None, contract_id=None, trade_start_time=None):
+    """Updates trading statistics and trade information for a user in the database."""
     conn = create_connection()
     if conn:
         try:
@@ -169,6 +176,7 @@ def update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_a
 
 # --- WebSocket Helper Functions ---
 def connect_websocket(user_token):
+    """Establishes a WebSocket connection and authenticates the user."""
     ws = websocket.WebSocket()
     try:
         ws.connect("wss://blue.derivws.com/websockets/v3?app_id=16929")
@@ -185,6 +193,7 @@ def connect_websocket(user_token):
         return None
 
 def get_balance_and_currency(user_token):
+    """Fetches the user's current balance and currency using WebSocket."""
     ws = None
     try:
         ws = connect_websocket(user_token)
@@ -205,6 +214,7 @@ def get_balance_and_currency(user_token):
             ws.close()
             
 def check_contract_status(ws, contract_id):
+    """Checks the status of an open contract."""
     if not ws or not ws.connected:
         return None
     req = {"proposal_open_contract": 1, "contract_id": contract_id}
@@ -217,6 +227,7 @@ def check_contract_status(ws, contract_id):
         return None
 
 def place_order(ws, proposal_id, amount):
+    """Places a trade order on Deriv."""
     if not ws or not ws.connected:
         return {"error": {"message": "WebSocket not connected."}}
     amount_decimal = decimal.Decimal(str(amount)).quantize(decimal.Decimal('0.01'), rounding=decimal.ROUND_HALF_UP)
@@ -231,6 +242,9 @@ def place_order(ws, proposal_id, amount):
 
 # --- Trading Bot Logic ---
 def analyse_data(df_ticks):
+    """
+    Analyzes tick data to generate a trading signal based on a 30-tick trend.
+    """
     if len(df_ticks) < 30:
         return "Neutral", "Insufficient data. Need at least 30 ticks."
 
@@ -244,6 +258,7 @@ def analyse_data(df_ticks):
         return "Neutral", "No clear 30-tick trend detected."
 
 def run_trading_job_for_user(session_data, check_only=False):
+    """Executes the trading logic for a specific user's session."""
     email = session_data['email']
     user_token = session_data['user_token']
     base_amount = session_data['base_amount']
@@ -360,6 +375,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                     ws.close()
 
 def bot_loop():
+    """Main loop that orchestrates trading jobs for all active sessions."""
     print("🤖 Starting main bot loop...")
     while True:
         try:
@@ -395,7 +411,7 @@ def bot_loop():
 def run_streamlit_app():
     st.set_page_config(page_title="Khoury Bot", layout="wide")
     st.title("Khoury Bot")
-
+    
     if "logged_in" not in st.session_state:
         st.session_state.logged_in = False
     if "user_email" not in st.session_state:
@@ -403,6 +419,8 @@ def run_streamlit_app():
     if "stats" not in st.session_state:
         st.session_state.stats = None
         
+    create_table_if_not_exists()
+
     if not st.session_state.logged_in:
         st.markdown("---")
         st.subheader("Login")
@@ -429,63 +447,50 @@ def run_streamlit_app():
         if st.session_state.stats:
             is_user_bot_running = st.session_state.stats.get('is_running', 0) == 1
         
-        with st.form("settings_and_control"):
-            st.subheader("Bot Settings and Control")
-            user_token_val = ""
-            base_amount_val = 0.5
-            tp_target_val = 20.0
-            max_consecutive_losses_val = 5
+        if not is_user_bot_running:
+            with st.form("settings_and_control"):
+                st.subheader("Bot Settings and Control")
+                user_token = st.text_input("Deriv API Token", type="password")
+                base_amount = st.number_input("Base Bet Amount", min_value=0.5, value=0.5, step=0.1)
+                tp_target = st.number_input("Take Profit Target", min_value=10.0, value=20.0, step=5.0)
+                max_consecutive_losses = st.number_input("Max Consecutive Losses", min_value=1, value=5, step=1)
+                
+                start_button = st.form_submit_button("Start Bot")
             
-            if st.session_state.stats:
-                user_token_val = st.session_state.stats['user_token']
-                base_amount_val = st.session_state.stats['base_amount']
-                tp_target_val = st.session_state.stats['tp_target']
-                max_consecutive_losses_val = st.session_state.stats['max_consecutive_losses']
+            if start_button:
+                if not user_token:
+                    st.error("Please enter a Deriv API Token to start the bot.")
+                else:
+                    settings = {
+                        "user_token": user_token,
+                        "base_amount": base_amount,
+                        "tp_target": tp_target,
+                        "max_consecutive_losses": max_consecutive_losses
+                    }
+                    start_new_session_in_db(st.session_state.user_email, settings)
+                    st.success("✅ Bot started successfully! Please wait for the stats to update.")
+                    st.rerun()
+        else:
+            st.success("🟢 Your bot is **RUNNING**.")
+            st.info("The bot is already active in the background.")
             
-            user_token = st.text_input("Deriv API Token", type="password", value=user_token_val, disabled=is_user_bot_running)
-            base_amount = st.number_input("Base Bet Amount", min_value=0.5, value=base_amount_val, step=0.1, disabled=is_user_bot_running)
-            tp_target = st.number_input("Take Profit Target", min_value=10.0, value=tp_target_val, step=5.0, disabled=is_user_bot_running)
-            max_consecutive_losses = st.number_input("Max Consecutive Losses", min_value=1, value=max_consecutive_losses_val, step=1, disabled=is_user_bot_running)
-            
-            col_start, col_stop = st.columns(2)
-            with col_start:
-                start_button = st.form_submit_button("Start Bot", disabled=is_user_bot_running)
-            with col_stop:
-                stop_button = st.form_submit_button("Stop Bot", disabled=not is_user_bot_running)
-        
-        if start_button:
-            if not user_token:
-                st.error("Please enter a Deriv API Token to start the bot.")
-            else:
-                settings = {
-                    "user_token": user_token,
-                    "base_amount": base_amount,
-                    "tp_target": tp_target,
-                    "max_consecutive_losses": max_consecutive_losses
-                }
-                start_new_session_in_db(st.session_state.user_email, settings)
-                st.success("✅ Bot started successfully! Please wait for the stats to update.")
-                st.rerun()
+            with st.form("stop_control"):
+                st.subheader("Stop Bot")
+                stop_button = st.form_submit_button("Stop Bot")
 
-        if stop_button:
-            update_is_running_status(st.session_state.user_email, 0)
-            clear_session_data(st.session_state.user_email)
-            st.info("⏸️ The bot has been stopped. Session data has been cleared.")
-            st.session_state.logged_in = False
-            st.session_state.user_email = ""
-            st.rerun()
+            if stop_button:
+                update_is_running_status(st.session_state.user_email, 0)
+                clear_session_data(st.session_state.user_email)
+                st.info("⏸️ The bot has been stopped. Session data has been cleared.")
+                st.session_state.logged_in = False
+                st.session_state.user_email = ""
+                st.rerun()
 
         st.markdown("---")
         st.subheader("Statistics")
 
         stats_placeholder = st.empty()
         
-        if is_user_bot_running:
-            st.success("🟢 Your bot is **RUNNING**.")
-            st.info("The bot is already active in the background. You can close this tab and monitor it from the stats page.")
-        else:
-            st.error("🔴 Your bot is **STOPPED**.")
-
         if st.session_state.user_email:
             session_data = get_session_status_from_db(st.session_state.user_email)
             if session_data:
@@ -518,247 +523,22 @@ def run_streamlit_app():
         time.sleep(1)
         st.rerun()
 
-# --- Stats Server Logic (Flask) ---
-def run_stats_server():
-    from flask import Flask, jsonify, render_template
-
-    app = Flask(__name__)
-    STATS_HTML = """
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Khoury Bot Stats</title>
-        <style>
-            body { font-family: Arial, sans-serif; background-color: #f0f2f5; color: #333; margin: 20px; }
-            .container { max-width: 900px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-            .header { text-align: center; color: #007bff; margin-bottom: 30px; }
-            .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; }
-            .stats-card { background-color: #e9ecef; padding: 15px; border-radius: 6px; }
-            .stats-card h3 { margin-top: 0; color: #495057; }
-            .stats-card p { margin: 5px 0; font-size: 1.1em; font-weight: bold; }
-            .status-badge { display: inline-block; padding: 4px 10px; border-radius: 12px; font-weight: bold; color: white; margin-top: 10px; }
-            .status-running { background-color: #28a745; }
-            .status-stopped { background-color: #dc3545; }
-            .status-no-data { background-color: #6c757d; }
-            .status-pending { background-color: #ffc107; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1 class="header">Khoury Bot - Live Statistics</h1>
-            <div id="stats-container">
-                <p style="text-align: center;">Loading statistics...</p>
-            </div>
-        </div>
-        
-        <script>
-            function fetchStats() {
-                fetch('/api/stats')
-                    .then(response => response.json())
-                    .then(data => {
-                        const statsContainer = document.getElementById('stats-container');
-                        statsContainer.innerHTML = ''; 
-                        
-                        if (Object.keys(data).length === 0) {
-                            statsContainer.innerHTML = '<p style="text-align: center;">No active bot sessions found.</p>';
-                            return;
-                        }
-                        
-                        const statsGrid = document.createElement('div');
-                        statsGrid.className = 'stats-grid';
-
-                        for (const email in data) {
-                            const stats = data[email];
-                            const card = document.createElement('div');
-                            card.className = 'stats-card';
-
-                            const statusClass = stats.is_running === 1 ? 'status-running' : 'status-stopped';
-                            const statusText = stats.is_running === 1 ? 'RUNNING' : 'STOPPED';
-
-                            card.innerHTML = `
-                                <h3>User: ${email}</h3>
-                                <p>Status: <span class="status-badge ${statusClass}">${statusText}</span></p>
-                                <p>Current Amount: $${stats.current_amount.toFixed(2)}</p>
-                                <p>Total Wins: ${stats.total_wins}</p>
-                                <p>Total Losses: ${stats.total_losses}</p>
-                                <p>Consecutive Losses: ${stats.consecutive_losses}</p>
-                                <p>Profit Target: $${stats.tp_target.toFixed(2)}</p>
-                            `;
-                            statsGrid.appendChild(card);
-                        }
-                        statsContainer.appendChild(statsGrid);
-                    })
-                    .catch(error => {
-                        console.error('Error fetching stats:', error);
-                        document.getElementById('stats-container').innerHTML = '<p style="text-align: center; color: red;">Failed to load statistics.</p>';
-                    });
-            }
-
-            setInterval(fetchStats, 5000);
-            fetchStats();
-        </script>
-    </body>
-    </html>
-    """
-    
-    with open("stats_temp.html", "w") as f:
-        f.write(STATS_HTML)
-    
-    @app.route('/')
-    def serve_stats_page():
-        return render_template("stats_temp.html")
-
-    @app.route('/api/stats')
-    def get_stats_api():
-        stats = {}
-        try:
-            conn = sqlite3.connect(DB_FILE)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM sessions")
-            rows = cursor.fetchall()
-            if rows:
-                for row in rows:
-                    stats[row['email']] = dict(row)
-        except sqlite3.Error as e:
-            print(f"❌ Database error in Flask app: {e}", file=sys.stderr)
-        finally:
-            if conn:
-                conn.close()
-        return jsonify(stats)
-
-    app.run(host='0.0.0.0', port=5001, debug=False, use_reloader=False)
-
-# --- Main Router Logic (Flask) ---
-def run_main_router():
-    from flask import Flask, render_template_string
-    
-    app = Flask(__name__)
-    
-    MAIN_PAGE_HTML = """
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Khoury Bot</title>
-        <style>
-            body { font-family: Arial, sans-serif; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; background-color: #f0f2f5; }
-            .container { text-align: center; background: white; padding: 40px; border-radius: 12px; box-shadow: 0 6px 10px rgba(0,0,0,0.1); }
-            h1 { color: #007bff; margin-bottom: 20px; }
-            .button-group { display: flex; gap: 20px; }
-            .button-group a { text-decoration: none; }
-            .button { background-color: #007bff; color: white; padding: 15px 30px; border: none; border-radius: 8px; font-size: 1.2em; cursor: pointer; transition: background-color 0.3s ease; }
-            .button:hover { background-color: #0056b3; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>Khoury Bot - Welcome</h1>
-            <div class="button-group">
-                <a href="http://localhost:8501" class="button">Log In / Settings</a>
-                <a href="http://localhost:5001" class="button">View Statistics</a>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-
-    @app.route('/')
-    def index():
-        return render_template_string(MAIN_PAGE_HTML)
-
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
-
-# --- Signal Handler to Terminate Processes Cleanly ---
-def shutdown_handler(signum, frame):
-    print("\nReceived shutdown signal. Terminating all processes...")
-    try:
-        if 'bot_process' in globals() and bot_process.is_alive():
-            bot_process.terminate()
-        if 'streamlit_process' in globals() and streamlit_process.is_alive():
-            streamlit_process.terminate()
-        if 'stats_process' in globals() and stats_process.is_alive():
-            stats_process.terminate()
-        if 'main_router_process' in globals() and main_router_process.is_alive():
-            main_router_process.terminate()
-        
-        if 'bot_process' in globals(): bot_process.join()
-        if 'streamlit_process' in globals(): streamlit_process.join()
-        if 'stats_process' in globals(): stats_process.join()
-        if 'main_router_process' in globals(): main_router_process.join()
-        
-        print("All processes terminated successfully.")
-    except Exception as e:
-        print(f"An error occurred during shutdown: {e}", file=sys.stderr)
-    sys.exit(0)
-
 # --- Main Orchestrator ---
 if __name__ == '__main__':
-    # Set up the signal handler for clean shutdown
-    signal.signal(signal.SIGINT, shutdown_handler)
-
     try:
-        import flask
         import streamlit
     except ImportError as e:
-        print(f"❌ Missing required library: {e}. Please run 'pip install Flask streamlit websocket-client pandas'.", file=sys.stderr)
+        print(f"❌ Missing required library: {e}. Please run 'pip install streamlit websocket-client pandas'.", file=sys.stderr)
         sys.exit(1)
 
-    # Ensure the database tables are created at the very beginning
     create_table_if_not_exists()
-    
     print("Starting all services... This may take a few moments.")
     
     # Start the bot loop in a separate process
     bot_process = multiprocessing.Process(target=bot_loop)
+    bot_process.daemon = True # This makes the bot process terminate when the main script ends
     bot_process.start()
-
-    # Start the Streamlit app in a separate process
-    # Using a specific port for Streamlit
-    streamlit_process = multiprocessing.Process(target=lambda: subprocess.run([sys.executable, "-m", "streamlit", "run", __file__, "--server.port", "8501", "--server.headless", "true"], env={**os.environ, "STREAMLIT_SERVER_PORT": "8501"}))
-    streamlit_process.start()
-
-    # Start the stats server (Flask) in a separate process
-    stats_process = multiprocessing.Process(target=run_stats_server)
-    stats_process.start()
     
-    # Start the main router (Flask) in a separate process
-    main_router_process = multiprocessing.Process(target=run_main_router)
-    main_router_process.start()
-
-    # Wait for the main router to start and then open the browser
-    # Increased sleep time to ensure servers have enough time to start
-    time.sleep(5) 
-    try:
-        webbrowser.open("http://localhost:5000")
-        print("\nOpened main page in browser. If it doesn't load, try visiting http://localhost:5000 manually.")
-    except Exception as e:
-        print(f"Could not automatically open browser: {e}. Please visit http://localhost:5000 manually.", file=sys.stderr)
-    
-    # Keep the main script alive to manage child processes
-    try:
-        while True:
-            # Check if child processes are alive and restart if necessary (optional, but can help with stability)
-            if not bot_process.is_alive():
-                print("Bot process died. Restarting...")
-                bot_process = multiprocessing.Process(target=bot_loop)
-                bot_process.start()
-            if not streamlit_process.is_alive():
-                print("Streamlit process died. Restarting...")
-                streamlit_process = multiprocessing.Process(target=lambda: subprocess.run([sys.executable, "-m", "streamlit", "run", __file__, "--server.port", "8501", "--server.headless", "true"], env={**os.environ, "STREAMLIT_SERVER_PORT": "8501"}))
-                streamlit_process.start()
-            if not stats_process.is_alive():
-                print("Stats server process died. Restarting...")
-                stats_process = multiprocessing.Process(target=run_stats_server)
-                stats_process.start()
-            if not main_router_process.is_alive():
-                print("Main router process died. Restarting...")
-                main_router_process = multiprocessing.Process(target=run_main_router)
-                main_router_process.start()
-                
-            time.sleep(5) # Check every 5 seconds
-    except KeyboardInterrupt:
-        shutdown_handler(None, None)
+    # Run the Streamlit app
+    st.set_option('server.port', 8501)
+    run_streamlit_app()
