@@ -10,7 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data112233.db"
+DB_FILE = "trading_data12345.db"
 trading_lock = threading.Lock()
 
 # --- Database & Utility Functions ---
@@ -259,20 +259,20 @@ def analyse_data(df_ticks):
     """
     Analyzes tick data to generate a trading signal based on a 30-tick trend.
     """
-    if len(df_ticks) < 20:
+    if len(df_ticks) < 15:
         return "Neutral", "Insufficient data. Need at least 30 ticks."
 
     # Analyze the overall trend of the last 20 ticks
-    last_20_ticks = df_ticks.tail(20).copy()
+    last_15_ticks = df_ticks.tail(15).copy()
     
     # Check if the overall trend is up (last tick price > first tick price)
-    if last_20_ticks.iloc[-1]['price'] > last_20_ticks.iloc[0]['price']:
-        return "Buy", "Detected a 20-tick uptrend."
+    if last_15_ticks.iloc[-1]['price'] > last_15_ticks.iloc[0]['price']:
+        return "Buy", "Detected a 15-tick uptrend."
     # Check if the overall trend is down (last tick price < first tick price)
-    elif last_20_ticks.iloc[-1]['price'] < last_20_ticks.iloc[0]['price']:
-        return "Sell", "Detected a 20-tick downtrend."
+    elif last_15_ticks.iloc[-1]['price'] < last_15_ticks.iloc[0]['price']:
+        return "Sell", "Detected a 15-tick downtrend."
     else:
-        return "Neutral", "No clear 20-tick trend detected."
+        return "Neutral", "No clear 15-tick trend detected."
 
 def run_trading_job_for_user(session_data, check_only=False):
     """Executes the trading logic for a specific user's session."""
@@ -367,7 +367,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                         proposal_req = {
                             "proposal": 1, "amount": amount_rounded, "basis": "stake",
                             "contract_type": contract_type, "currency": currency,
-                            "duration": 45, "duration_unit": "s", "symbol": "R_100"
+                            "duration": 20, "duration_unit": "s", "symbol": "R_100"
                         }
                         ws.send(json.dumps(proposal_req))
                         proposal_response = json.loads(ws.recv())
@@ -411,10 +411,10 @@ def bot_loop():
                     trade_start_time = latest_session_data.get('trade_start_time')
                     
                     if contract_id:
-                        if (time.time() - trade_start_time) >= 51: 
+                        if (time.time() - trade_start_time) >= 25: 
                             run_trading_job_for_user(latest_session_data, check_only=True)
                     
-                    elif now.second == 0:
+                    elif now.second == 29:
                         re_checked_session_data = get_session_status_from_db(email)
                         if re_checked_session_data and not re_checked_session_data.get('contract_id'):
                             run_trading_job_for_user(re_checked_session_data, check_only=False)
