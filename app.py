@@ -10,7 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data321.db"
+DB_FILE = "trading_data505.db"
 trading_lock = threading.Lock()
 
 # --- Database & Utility Functions ---
@@ -240,28 +240,22 @@ def place_order(ws, proposal_id, amount):
 # --- Trading Bot Logic ---
 def analyse_data(df_ticks):
     """
-    Analyzes tick data to generate a trading signal based on a combined long-term (15 ticks) and short-term (5 ticks) trend.
+    Analyzes tick data to generate a trading signal based on a 30-tick trend.
     """
-    if len(df_ticks) < 15:
-        return "Neutral", "Insufficient data. Need at least 15 ticks."
+    if len(df_ticks) < 30:
+        return "Neutral", "Insufficient data. Need at least 30 ticks."
 
-    # Analyze the overall trend of the last 15 ticks
-    last_15_ticks = df_ticks.tail(15).copy()
-    trend_15_up = last_15_ticks.iloc[-1]['price'] > last_15_ticks.iloc[0]['price']
-    trend_15_down = last_15_ticks.iloc[-1]['price'] < last_15_ticks.iloc[0]['price']
+    # Analyze the overall trend of the last 30 ticks
+    last_30_ticks = df_ticks.tail(30).copy()
     
-    # Analyze the short-term trend of the last 5 ticks
-    last_5_ticks = last_15_ticks.tail(5).copy()
-    trend_5_up = last_5_ticks.iloc[-1]['price'] > last_5_ticks.iloc[0]['price']
-    trend_5_down = last_5_ticks.iloc[-1]['price'] < last_5_ticks.iloc[0]['price']
-
-    # Check for the specified patterns
-    if trend_15_up and trend_5_up:
-        return "Buy", "Detected a strong uptrend signal (15 ticks and 5 ticks)."
-    elif trend_15_down and trend_5_down:
-        return "Sell", "Detected a strong downtrend signal (15 ticks and 5 ticks)."
+    # Check if the overall trend is up (last tick price > first tick price)
+    if last_30_ticks.iloc[-1]['price'] > last_30_ticks.iloc[0]['price']:
+        return "Buy", "Detected a 30-tick uptrend."
+    # Check if the overall trend is down (last tick price < first tick price)
+    elif last_30_ticks.iloc[-1]['price'] < last_30_ticks.iloc[0]['price']:
+        return "Sell", "Detected a 30-tick downtrend."
     else:
-        return "Neutral", "No clear combined trend signal detected."
+        return "Neutral", "No clear 30-tick trend detected."
 
 def run_trading_job_for_user(session_data, check_only=False):
     """Executes the trading logic for a specific user's session."""
@@ -339,7 +333,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                     initial_balance = float(balance)
                     update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
                 
-                req = {"ticks_history": "R_100", "end": "latest", "count": 15, "style": "ticks"}
+                req = {"ticks_history": "R_100", "end": "latest", "count": 30, "style": "ticks"}
                 ws.send(json.dumps(req))
                 tick_data = None
                 while not tick_data:
@@ -356,7 +350,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                         proposal_req = {
                             "proposal": 1, "amount": amount_rounded, "basis": "stake",
                             "contract_type": contract_type, "currency": currency,
-                            "duration": 5, "duration_unit": "s", "symbol": "R_100"
+                            "duration": 30, "duration_unit": "s", "symbol": "R_100"
                         }
                         ws.send(json.dumps(proposal_req))
                         proposal_response = json.loads(ws.recv())
@@ -400,7 +394,7 @@ def bot_loop():
                     trade_start_time = latest_session_data.get('trade_start_time')
                     
                     if contract_id:
-                        if (time.time() - trade_start_time) >= 10: 
+                        if (time.time() - trade_start_time) >= 40: 
                             run_trading_job_for_user(latest_session_data, check_only=True)
                     
                     elif now.second == 58:
