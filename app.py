@@ -90,7 +90,6 @@ def start_new_session_in_db(email, settings):
                     (email, user_token, base_amount, tp_target, max_consecutive_losses, current_amount, is_running)
                     VALUES (?, ?, ?, ?, ?, ?, 1)
                 """, (email, settings["user_token"], settings["base_amount"], settings["tp_target"], settings["max_consecutive_losses"], settings["base_amount"]))
-        except sqlite3.Error as e:
         finally:
             conn.close()
 
