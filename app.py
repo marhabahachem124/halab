@@ -10,7 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data120.db"
+DB_FILE = "trading_data12.db"
 trading_lock = threading.Lock()
 
 # --- Database & Utility Functions ---
@@ -259,20 +259,20 @@ def analyse_data(df_ticks):
     """
     Analyzes tick data to generate a trading signal based on a 30-tick trend.
     """
-    if len(df_ticks) < 30:
-        return "Neutral", "Insufficient data. Need at least 30 ticks."
+    if len(df_ticks) < 5:
+        return "Neutral", "Insufficient data. Need at least 5 ticks."
 
     # Analyze the overall trend of the last 20 ticks
-    last_30_ticks = df_ticks.tail(30).copy()
+    last_5_ticks = df_ticks.tail(5).copy()
     
     # Check if the overall trend is up (last tick price > first tick price)
-    if last_30_ticks.iloc[-1]['price'] > last_30_ticks.iloc[0]['price']:
-        return "Sell", "Detected a 30-tick uptrend."
+    if last_5_ticks.iloc[-1]['price'] > last_5_ticks.iloc[0]['price']:
+        return "Buy", "Detected a 5-tick uptrend."
     # Check if the overall trend is down (last tick price < first tick price)
-    elif last_30_ticks.iloc[-1]['price'] < last_30_ticks.iloc[0]['price']:
-        return "Buy", "Detected a 30-tick downtrend."
+    elif last_5_ticks.iloc[-1]['price'] < last_5_ticks.iloc[0]['price']:
+        return "Sell", "Detected a 5-tick downtrend."
     else:
-        return "Neutral", "No clear 30-tick trend detected."
+        return "Neutral", "No clear 5-tick trend detected."
 
 def run_trading_job_for_user(session_data, check_only=False):
     """Executes the trading logic for a specific user's session."""
@@ -350,7 +350,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                     initial_balance = float(balance)
                     update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id)
                 
-                req = {"ticks_history": "R_100", "end": "latest", "count": 30, "style": "ticks"}
+                req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
                 ws.send(json.dumps(req))
                 tick_data = None
                 while not tick_data:
@@ -367,7 +367,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                         proposal_req = {
                             "proposal": 1, "amount": amount_rounded, "basis": "stake",
                             "contract_type": contract_type, "currency": currency,
-                            "duration": 30, "duration_unit": "s", "symbol": "R_100"
+                            "duration": 45, "duration_unit": "s", "symbol": "R_100"
                         }
                         ws.send(json.dumps(proposal_req))
                         proposal_response = json.loads(ws.recv())
@@ -411,10 +411,10 @@ def bot_loop():
                     trade_start_time = latest_session_data.get('trade_start_time')
                     
                     if contract_id:
-                        if (time.time() - trade_start_time) >= 40: 
+                        if (time.time() - trade_start_time) >= 50: 
                             run_trading_job_for_user(latest_session_data, check_only=True)
                     
-                    elif now.second == 0:
+                    elif now.second == 5:
                         re_checked_session_data = get_session_status_from_db(email)
                         if re_checked_session_data and not re_checked_session_data.get('contract_id'):
                             run_trading_job_for_user(re_checked_session_data, check_only=False)
@@ -479,9 +479,9 @@ if st.session_state.logged_in:
     with st.form("settings_and_control"):
         st.subheader("Bot Settings and Control")
         user_token_val = ""
-        base_amount_val = 0.5
+        base_amount_val = 0.35
         tp_target_val = 20.0
-        max_consecutive_losses_val = 5
+        max_consecutive_losses_val = 3
         
         if st.session_state.stats:
             user_token_val = st.session_state.stats['user_token']
@@ -490,8 +490,8 @@ if st.session_state.logged_in:
             max_consecutive_losses_val = st.session_state.stats['max_consecutive_losses']
         
         user_token = st.text_input("Deriv API Token", type="password", value=user_token_val, disabled=is_user_bot_running)
-        base_amount = st.number_input("Base Bet Amount", min_value=0.5, value=base_amount_val, step=0.1, disabled=is_user_bot_running)
-        tp_target = st.number_input("Take Profit Target", min_value=10.0, value=tp_target_val, step=5.0, disabled=is_user_bot_running)
+        base_amount = st.number_input("Base Bet Amount", min_value=0.35, value=base_amount_val, step=0.1, disabled=is_user_bot_running)
+        tp_target = st.number_input("Take Profit Target", min_value=5.0, value=tp_target_val, step=5.0, disabled=is_user_bot_running)
         max_consecutive_losses = st.number_input("Max Consecutive Losses", min_value=1, value=max_consecutive_losses_val, step=1, disabled=is_user_bot_running)
         
         col_start, col_stop = st.columns(2)
