@@ -10,7 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data0101.db"
+DB_FILE = "trading_data0022.db"
 trading_lock = threading.Lock()
 
 # --- Database & Utility Functions ---
@@ -21,6 +21,7 @@ def create_connection():
         return conn
     except sqlite3.Error as e:
         # In a background process, we should log the error, not use st.error
+        # print(f"❌ Database connection error: {e}") # Removed print
         return None
 
 def create_table_if_not_exists():
@@ -46,13 +47,20 @@ def create_table_if_not_exists():
             );
             """
             conn.execute(sql_create_sessions_table)
+            
             cursor = conn.execute("PRAGMA table_info(sessions)")
             columns = [col[1] for col in cursor.fetchall()]
             if 'is_running' not in columns:
                 conn.execute("ALTER TABLE sessions ADD COLUMN is_running INTEGER DEFAULT 0")
+            
             conn.commit()
+            
+        except sqlite3.Error as e:
+            # print(f"❌ Error creating/updating table: {e}") # Removed print
+            pass # Suppress error message as requested
         finally:
             conn.close()
+
 def is_any_session_running():
     """Checks if there is any active session in the database."""
     conn = create_connection()
@@ -63,6 +71,7 @@ def is_any_session_running():
                 count = cursor.fetchone()[0]
                 return count > 0
         except sqlite3.Error as e:
+            # print(f"❌ Error checking for active sessions: {e}") # Removed print
             return True # Return True to prevent creating a new loop on error
         finally:
             conn.close()
@@ -75,8 +84,10 @@ def is_user_active(email):
             active_users = [line.strip() for line in file.readlines()]
         return email in active_users
     except FileNotFoundError:
+        # print("❌ Error: 'user_ids.txt' file not found.") # Removed print
         return False
     except Exception as e:
+        # print(f"❌ An error occurred while reading 'user_ids.txt': {e}") # Removed print
         return False
 
 def start_new_session_in_db(email, settings):
@@ -90,6 +101,10 @@ def start_new_session_in_db(email, settings):
                     (email, user_token, base_amount, tp_target, max_consecutive_losses, current_amount, is_running)
                     VALUES (?, ?, ?, ?, ?, ?, 1)
                 """, (email, settings["user_token"], settings["base_amount"], settings["tp_target"], settings["max_consecutive_losses"], settings["base_amount"]))
+            # print(f"✅ Session for {email} saved to database and bot status set to running.") # Removed print
+        except sqlite3.Error as e:
+            # print(f"❌ Error saving session to database: {e}") # Removed print
+            pass # Suppress error message as requested
         finally:
             conn.close()
 
@@ -100,6 +115,10 @@ def update_is_running_status(email, status):
         try:
             with conn:
                 conn.execute("UPDATE sessions SET is_running = ? WHERE email = ?", (status, email))
+            # print(f"✅ Bot status for {email} updated to {'running' if status == 1 else 'stopped'}.") # Removed print
+        except sqlite3.Error as e:
+            # print(f"❌ Error updating bot status for {email}: {e}") # Removed print
+            pass # Suppress error message as requested
         finally:
             conn.close()
 
@@ -110,6 +129,10 @@ def clear_session_data(email):
         try:
             with conn:
                 conn.execute("DELETE FROM sessions WHERE email=?", (email,))
+            # print(f"✅ Session for {email} deleted successfully.") # Removed print
+        except sqlite3.Error as e:
+            # print(f"❌ Error deleting session from database: {e}") # Removed print
+            pass # Suppress error message as requested
         finally:
             conn.close()
 
@@ -125,6 +148,9 @@ def get_session_status_from_db(email):
                 if row:
                     return dict(row)
                 return None
+        except sqlite3.Error as e:
+            # print(f"❌ Error fetching session from database: {e}") # Removed print
+            return None
         finally:
             conn.close()
 
@@ -141,6 +167,8 @@ def get_all_active_sessions():
                 for row in rows:
                     sessions.append(dict(row))
                 return sessions
+        except sqlite3.Error as e:
+            # print(f"❌ Error fetching all sessions from database: {e}") # Removed print
             return []
         finally:
             conn.close()
@@ -158,6 +186,10 @@ def update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_a
                 WHERE email = ?
                 """
                 conn.execute(update_query, (total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id, trade_start_time, email))
+            # print(f"✅ Stats for {email} updated successfully.") # Removed print
+        except sqlite3.Error as e:
+            # print(f"❌ Error updating session in database: {e}") # Removed print
+            pass # Suppress error message as requested
         finally:
             conn.close()
 
@@ -171,7 +203,13 @@ def connect_websocket(user_token):
         ws.send(json.dumps(auth_req))
         auth_response = json.loads(ws.recv())
         if auth_response.get('error'):
+            # print(f"❌ Authentication failed: {auth_response['error']['message']}") # Removed print
             ws.close()
+            return None
+        return ws
+    except Exception as e:
+        # print(f"❌ WebSocket connection or authentication failed: {e}") # Removed print
+        return None
 
 def get_balance_and_currency(user_token):
     """Fetches the user's current balance and currency using WebSocket."""
@@ -187,6 +225,9 @@ def get_balance_and_currency(user_token):
             balance_info = balance_response.get('balance', {})
             return balance_info.get('balance'), balance_info.get('currency')
         return None, None
+    except Exception as e:
+        # print(f"❌ Error fetching balance: {e}") # Removed print
+        return None, None
     finally:
         if ws and ws.connected:
             ws.close()
@@ -200,6 +241,9 @@ def check_contract_status(ws, contract_id):
         ws.send(json.dumps(req))
         response = json.loads(ws.recv())
         return response.get('proposal_open_contract')
+    except Exception as e:
+        # print(f"❌ Error checking contract status: {e}") # Removed print
+        return None
 
 def place_order(ws, proposal_id, amount):
     """Places a trade order on Deriv."""
@@ -212,6 +256,7 @@ def place_order(ws, proposal_id, amount):
         response = json.loads(ws.recv())
         return response
     except Exception as e:
+        # print(f"❌ Error placing order: {e}") # Removed print
         return {"error": {"message": "Order placement failed."}}
 
 # --- Trading Bot Logic ---
@@ -222,7 +267,7 @@ def analyse_data(df_ticks):
     if len(df_ticks) < 5:
         return "Neutral", "Insufficient data. Need at least 5 ticks."
 
-    # Analyze the overall trend of the last 20 ticks
+    # Analyze the overall trend of the last 30 ticks
     last_5_ticks = df_ticks.tail(5).copy()
     
     # Check if the overall trend is up (last tick price > first tick price)
@@ -258,15 +303,18 @@ def run_trading_job_for_user(session_data, check_only=False):
                 profit = float(contract_info.get('profit', 0))
                 
                 if profit > 0:
+                    # print(f"🎉 User {email}: Trade won! Profit: ${profit:.2f}") # Removed print
                     consecutive_losses = 0
                     total_wins += 1
                     current_amount = base_amount
                 elif profit < 0:
+                    # print(f"🔴 User {email}: Trade lost. Loss: ${profit:.2f}") # Removed print
                     consecutive_losses += 1
                     total_losses += 1
-                    next_bet = float(current_amount) * 2.2 
+                    next_bet = float(current_amount) * 2.2
                     current_amount = max(base_amount, next_bet)
-                else: 
+                else:
+                    # print(f"➖ User {email}: Trade was a tie. Amount remains ${current_amount:.2f}") # Removed print
                     consecutive_losses = 0
                 
                 contract_id = None
@@ -275,16 +323,22 @@ def run_trading_job_for_user(session_data, check_only=False):
 
                 new_balance, _ = get_balance_and_currency(user_token)
                 if new_balance is not None and (float(new_balance) - float(initial_balance)) >= float(tp_target):
+                    # print(f"🎉 User {email}: TP target (${tp_target}) reached. Stopping the bot and clearing data.") # Removed print
                     update_is_running_status(email, 0)
-                    clear_session_data(email) 
+                    clear_session_data(email)
                     return
                 
                 if consecutive_losses >= max_consecutive_losses:
-                
+                    # print(f"🔴 User {email}: Max consecutive losses ({max_consecutive_losses}) reached. Stopping the bot and clearing data.") # Removed print
+                    update_is_running_status(email, 0)
                     clear_session_data(email)
                     return
             else:
-
+                # print(f"User {email}: Contract {contract_id} is still pending. Retrying next cycle.") # Removed print
+                pass
+        except Exception as e:
+            # print(f"\n❌ An unexpected error occurred while processing pending contract for user {email}: {e}") # Removed print
+            pass
         finally:
             if ws and ws.connected:
                 ws.close()
@@ -297,6 +351,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                 if not ws: return
                 balance, currency = get_balance_and_currency(user_token)
                 if balance is None:
+                    # print(f"❌ Failed to fetch balance for user {email}. Skipping trade job.") # Removed print
                     return
                 if initial_balance == 0:
                     initial_balance = float(balance)
@@ -330,13 +385,26 @@ def run_trading_job_for_user(session_data, check_only=False):
                                 contract_id = order_response['buy']['contract_id']
                                 trade_start_time = time.time()
                                 update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=contract_id, trade_start_time=trade_start_time)
+                                # print(f"✅ User {email}: New trade placed successfully. Type: {contract_type}, Amount: {current_amount}") # Removed print
+                            else:
+                                # print(f"❌ User {email}: Failed to place order. Response: {order_response}") # Removed print
+                                pass
+                        else:
+                            # print(f"❌ User {email}: Failed to get proposal. Response: {proposal_response}") # Removed print
+                            pass
+                else:
+                    # print(f"❌ User {email}: Failed to get tick data.") # Removed print
+                    pass
             except Exception as e:
+                # print(f"\n❌ An unexpected error occurred in the trading job for user {email}: {e}") # Removed print
+                pass
             finally:
                 if ws and ws.connected:
                     ws.close()
 
 def bot_loop():
     """Main loop that orchestrates trading jobs for all active sessions."""
+    # print("🤖 Starting main bot loop...") # Removed print
     while True:
         try:
             now = datetime.now()
@@ -354,7 +422,7 @@ def bot_loop():
                     trade_start_time = latest_session_data.get('trade_start_time')
                     
                     if contract_id:
-                        if (time.time() - trade_start_time) >= 30: 
+                        if (time.time() - trade_start_time) >= 30:
                             run_trading_job_for_user(latest_session_data, check_only=True)
                     
                     elif now.second == 5:
@@ -362,8 +430,9 @@ def bot_loop():
                         if re_checked_session_data and not re_checked_session_data.get('contract_id'):
                             run_trading_job_for_user(re_checked_session_data, check_only=False)
             
-            time.sleep(1) 
+            time.sleep(1)
         except Exception as e:
+            # print(f"❌ حدث خطأ غير متوقع في الحلقة الرئيسية: {e}") # Removed print
             time.sleep(5)
 
 # --- Streamlit App Configuration ---
@@ -386,6 +455,10 @@ if not is_any_session_running():
         bot_thread = threading.Thread(target=bot_loop, daemon=True)
         bot_thread.start()
         st.session_state.bot_thread = bot_thread
+        # print("Bot thread started.") # Removed print
+else:
+    # print("A session is already running. No new bot loop will be created.") # Removed print
+    pass
 
 # --- Login Section ---
 if not st.session_state.logged_in:
@@ -418,9 +491,9 @@ if st.session_state.logged_in:
     with st.form("settings_and_control"):
         st.subheader("Bot Settings and Control")
         user_token_val = ""
-        base_amount_val = 0.35
+        base_amount_val = 0.5
         tp_target_val = 20.0
-        max_consecutive_losses_val = 3
+        max_consecutive_losses_val = 5
         
         if st.session_state.stats:
             user_token_val = st.session_state.stats['user_token']
@@ -429,8 +502,8 @@ if st.session_state.logged_in:
             max_consecutive_losses_val = st.session_state.stats['max_consecutive_losses']
         
         user_token = st.text_input("Deriv API Token", type="password", value=user_token_val, disabled=is_user_bot_running)
-        base_amount = st.number_input("Base Bet Amount", min_value=0.35, value=base_amount_val, step=0.1, disabled=is_user_bot_running)
-        tp_target = st.number_input("Take Profit Target", min_value=5.0, value=tp_target_val, step=5.0, disabled=is_user_bot_running)
+        base_amount = st.number_input("Base Bet Amount", min_value=0.5, value=base_amount_val, step=0.1, disabled=is_user_bot_running)
+        tp_target = st.number_input("Take Profit Target", min_value=10.0, value=tp_target_val, step=5.0, disabled=is_user_bot_running)
         max_consecutive_losses = st.number_input("Max Consecutive Losses", min_value=1, value=max_consecutive_losses_val, step=1, disabled=is_user_bot_running)
         
         col_start, col_stop = st.columns(2)
