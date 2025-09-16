@@ -100,7 +100,6 @@ def update_is_running_status(email, status):
         try:
             with conn:
                 conn.execute("UPDATE sessions SET is_running = ? WHERE email = ?", (status, email))
-        except sqlite3.Error as e:
         finally:
             conn.close()
 
@@ -111,7 +110,6 @@ def clear_session_data(email):
         try:
             with conn:
                 conn.execute("DELETE FROM sessions WHERE email=?", (email,))
-        except sqlite3.Error as e:
         finally:
             conn.close()
 
@@ -127,8 +125,6 @@ def get_session_status_from_db(email):
                 if row:
                     return dict(row)
                 return None
-        except sqlite3.Error as e:
-            return None
         finally:
             conn.close()
 
@@ -145,7 +141,6 @@ def get_all_active_sessions():
                 for row in rows:
                     sessions.append(dict(row))
                 return sessions
-        except sqlite3.Error as e:
             return []
         finally:
             conn.close()
@@ -163,7 +158,6 @@ def update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_a
                 WHERE email = ?
                 """
                 conn.execute(update_query, (total_wins, total_losses, current_amount, consecutive_losses, initial_balance, contract_id, trade_start_time, email))
-        except sqlite3.Error as e:
         finally:
             conn.close()
 
@@ -180,7 +174,6 @@ def connect_websocket(user_token):
             ws.close()
             return None
         return ws
-    except Exception as e:
         return None
 
 def get_balance_and_currency(user_token):
@@ -197,8 +190,6 @@ def get_balance_and_currency(user_token):
             balance_info = balance_response.get('balance', {})
             return balance_info.get('balance'), balance_info.get('currency')
         return None, None
-    except Exception as e:
-        return None, None
     finally:
         if ws and ws.connected:
             ws.close()
@@ -212,8 +203,6 @@ def check_contract_status(ws, contract_id):
         ws.send(json.dumps(req))
         response = json.loads(ws.recv())
         return response.get('proposal_open_contract')
-    except Exception as e:
-        return None
 
 def place_order(ws, proposal_id, amount):
     """Places a trade order on Deriv."""
@@ -299,7 +288,6 @@ def run_trading_job_for_user(session_data, check_only=False):
                     return
             else:
 
-        except Exception as e:
         finally:
             if ws and ws.connected:
                 ws.close()
