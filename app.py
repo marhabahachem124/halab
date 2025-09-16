@@ -46,17 +46,14 @@ def create_table_if_not_exists():
             );
             """
             conn.execute(sql_create_sessions_table)
-            
             cursor = conn.execute("PRAGMA table_info(sessions)")
             columns = [col[1] for col in cursor.fetchall()]
             if 'is_running' not in columns:
                 conn.execute("ALTER TABLE sessions ADD COLUMN is_running INTEGER DEFAULT 0")
-            
             conn.commit()
         except sqlite3.Error as e:
         finally:
             conn.close()
-
 def is_any_session_running():
     """Checks if there is any active session in the database."""
     conn = create_connection()
