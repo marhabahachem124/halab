@@ -172,9 +172,6 @@ def connect_websocket(user_token):
         auth_response = json.loads(ws.recv())
         if auth_response.get('error'):
             ws.close()
-            return None
-        return ws
-        return None
 
 def get_balance_and_currency(user_token):
     """Fetches the user's current balance and currency using WebSocket."""
