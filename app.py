@@ -23,7 +23,7 @@ def create_connection():
         return None
 
 def create_table_if_not_exists():
-    """Create the sessions table if it does not exist and add new columns."""
+    """Create the sessions and bot_status tables if they do not exist."""
     conn = create_connection()
     if conn:
         try:
@@ -44,14 +44,48 @@ def create_table_if_not_exists():
                 is_running INTEGER DEFAULT 0
             );
             """
+            sql_create_bot_status_table = """
+            CREATE TABLE IF NOT EXISTS bot_status (
+                flag_id INTEGER PRIMARY KEY,
+                is_running_flag INTEGER DEFAULT 0,
+                last_heartbeat REAL DEFAULT 0.0
+            );
+            """
             conn.execute(sql_create_sessions_table)
+            conn.execute(sql_create_bot_status_table)
             
-            cursor = conn.execute("PRAGMA table_info(sessions)")
-            columns = [col[1] for col in cursor.fetchall()]
-            if 'is_running' not in columns:
-                conn.execute("ALTER TABLE sessions ADD COLUMN is_running INTEGER DEFAULT 0")
+            # Check and insert the initial status row if it doesn't exist
+            cursor = conn.execute("SELECT COUNT(*) FROM bot_status WHERE flag_id = 1")
+            if cursor.fetchone()[0] == 0:
+                conn.execute("INSERT INTO bot_status (flag_id, is_running_flag, last_heartbeat) VALUES (1, 0, 0.0)")
             
             conn.commit()
+        except sqlite3.Error as e:
+            pass
+        finally:
+            conn.close()
+
+def get_bot_running_status():
+    """Gets the global bot running status from the database."""
+    conn = create_connection()
+    if conn:
+        try:
+            with conn:
+                cursor = conn.execute("SELECT is_running_flag FROM bot_status WHERE flag_id = 1")
+                row = cursor.fetchone()
+                return row[0] if row else 0
+        except sqlite3.Error as e:
+            return 0
+        finally:
+            conn.close()
+
+def update_bot_running_status(status):
+    """Updates the global bot running status in the database."""
+    conn = create_connection()
+    if conn:
+        try:
+            with conn:
+                conn.execute("UPDATE bot_status SET is_running_flag = ?, last_heartbeat = ? WHERE flag_id = 1", (status, time.time()))
         except sqlite3.Error as e:
             pass
         finally:
@@ -67,10 +101,10 @@ def is_any_session_running():
                 count = cursor.fetchone()[0]
                 return count > 0
         except sqlite3.Error as e:
-            return True # Assume an active session if a database connection fails
+            return True
         finally:
             conn.close()
-    return True # Assume an active session if a database connection fails
+    return True
 
 def is_user_active(email):
     """Checks if a user's email exists in the user_ids.txt file."""
@@ -372,6 +406,10 @@ def bot_loop():
     while True:
         try:
             now = datetime.now()
+            
+            # This is the heartbeat. It lets other processes know this bot is alive.
+            update_bot_running_status(1)
+
             active_sessions = get_all_active_sessions()
             
             if active_sessions:
@@ -413,16 +451,16 @@ if "stats" not in st.session_state:
 create_table_if_not_exists()
 
 # --- Start Background Bot Thread ---
-# Check if there's any active session AND if the thread is not already alive
-# This ensures a thread is created ONLY IF there's a session to run AND no thread is active
-if is_any_session_running() and ("bot_thread" not in st.session_state or not st.session_state.bot_thread.is_alive()):
+# Now, we rely on the database for the global bot status
+if get_bot_running_status() == 0:
     try:
+        # Create and start the bot thread
         bot_thread = threading.Thread(target=bot_loop, daemon=True)
         bot_thread.start()
-        st.session_state.bot_thread = bot_thread
+        # The bot_loop itself will update the status in the DB
     except Exception as e:
-        pass # Error handled by bot_loop itself if needed
-
+        pass
+    
 # --- Login Section ---
 if not st.session_state.logged_in:
     st.markdown("---")
