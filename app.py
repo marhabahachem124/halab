@@ -8,7 +8,7 @@ import decimal
 import sqlite3
 import pandas as pd
 from datetime import datetime
-from multiprocessing import Process
+from multiprocessing import Process, current_process
 
 # --- SQLite Database Configuration ---
 DB_FILE = "trading_data.db"
@@ -72,16 +72,24 @@ def get_bot_running_status():
     if conn:
         try:
             with conn:
-                cursor = conn.execute("SELECT is_running_flag FROM bot_status WHERE flag_id = 1")
+                cursor = conn.execute("SELECT is_running_flag, last_heartbeat FROM bot_status WHERE flag_id = 1")
                 row = cursor.fetchone()
-                return row[0] if row else 0
+                if row:
+                    is_running_flag, last_heartbeat = row
+                    # Check if the last heartbeat is recent (e.g., within 20 seconds)
+                    if is_running_flag == 1 and (time.time() - last_heartbeat > 20):
+                        # The bot is likely dead, so we mark it as not running.
+                        update_bot_running_status_directly(0)
+                        return 0
+                    return is_running_flag
+                return 0
         except sqlite3.Error as e:
             return 0
         finally:
             conn.close()
 
-def update_bot_running_status(status):
-    """Updates the global bot running status in the database."""
+def update_bot_running_status_directly(status):
+    """Updates the global bot running status and heartbeat in the database."""
     conn = create_connection()
     if conn:
         try:
@@ -91,7 +99,7 @@ def update_bot_running_status(status):
             pass
         finally:
             conn.close()
-
+            
 def is_any_session_running():
     """Checks if there is any active session in the database."""
     conn = create_connection()
@@ -404,15 +412,23 @@ def run_trading_job_for_user(session_data, check_only=False):
 
 def bot_loop():
     """Main loop that orchestrates trading jobs for all active sessions."""
-    # This is a key change: now the bot loop can handle its own state and heartbeat
-    # without relying on Streamlit's process.
+    # This check ensures that only the main process instance runs the loop.
+    if not current_process().name == 'Process-1':
+        return
+        
     while True:
         try:
             now = datetime.now()
             
-            update_bot_running_status(1)
+            # The heartbeat check and update are now crucial
+            update_bot_running_status_directly(1)
 
             active_sessions = get_all_active_sessions()
+            
+            # A graceful exit condition if there are no more active sessions
+            if not is_any_session_running():
+                update_bot_running_status_directly(0)
+                break
             
             if active_sessions:
                 for session in active_sessions:
@@ -437,6 +453,8 @@ def bot_loop():
             time.sleep(1) 
         except Exception as e:
             time.sleep(5)
+            # If an error occurs, the bot should still update its status to indicate it's trying to recover.
+            update_bot_running_status_directly(1)
 
 # --- Streamlit App Configuration ---
 st.set_page_config(page_title="Khoury Bot", layout="wide")
@@ -454,15 +472,24 @@ if "bot_process" not in st.session_state:
 
 create_table_if_not_exists()
 
-# --- Start Background Bot Process (NEW LOGIC) ---
-# Check if the process is not running or has died.
-if st.session_state.bot_process is None or not st.session_state.bot_process.is_alive():
+# --- Start Background Bot Process (REVISED LOGIC) ---
+# Read the bot status directly from the database
+bot_status_from_db = get_bot_running_status()
+
+# We only start the process if the DB says it's not running
+if bot_status_from_db == 0:
     try:
-        # Create and start the bot process using multiprocessing.
+        # Step 1: Immediately update the DB to say the bot is starting
+        update_bot_running_status_directly(1)
+        
+        # Step 2: Now start the process.
         st.session_state.bot_process = Process(target=bot_loop, daemon=True)
         st.session_state.bot_process.start()
+        st.success("✅ تم تشغيل عملية البوت بنجاح. يرجى الانتظار لتحديث الحالة...")
     except Exception as e:
         st.error(f"❌ فشل تشغيل عملية البوت: {e}")
+        # If it fails, revert the DB status
+        update_bot_running_status_directly(0)
 
 # --- Login Section ---
 if not st.session_state.logged_in:
@@ -543,10 +570,12 @@ if st.session_state.logged_in:
 
     stats_placeholder = st.empty()
     
-    if is_user_bot_running:
-        st.success("🟢 Your bot is RUNNING.")
+    # Check bot status from DB for display
+    current_bot_status = get_bot_running_status()
+    if current_bot_status == 1:
+        st.success("🟢 البوت قيد التشغيل.")
     else:
-        st.error("🔴 Your bot is STOPPED.")
+        st.error("🔴 البوت متوقف.")
 
     if st.session_state.user_email:
         session_data = get_session_status_from_db(st.session_state.user_email)
