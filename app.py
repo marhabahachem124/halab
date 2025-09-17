@@ -12,7 +12,7 @@ from datetime import datetime
 import multiprocessing
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data.db"
+DB_FILE = "trading_data003322.db"
 
 # --- Database & Utility Functions ---
 def create_connection():
@@ -313,19 +313,39 @@ def place_order(ws, proposal_id, amount):
 # --- Trading Bot Logic ---
 def analyse_data(df_ticks):
     """
-    Analyzes tick data to generate a trading signal based on a 5-tick trend.
+    Analyzes tick data to generate a trading signal based on a 30-tick and 5-tick trend.
     """
-    if len(df_ticks) < 25:
-        return "Neutral", "Insufficient data. Need at least 5 ticks."
+    if len(df_ticks) < 30: # Changed from 25 to 30
+        return "Neutral", "Insufficient data. Need at least 30 ticks."
 
-    last_25_ticks = df_ticks.tail(25).copy()
+    # Get the last 30 ticks for the main trend analysis
+    last_30_ticks = df_ticks.tail(30).copy()
     
-    if last_25_ticks.iloc[-1]['price'] > last_25_ticks.iloc[0]['price']:
-        return "Sell", "Detected a 25-tick uptrend."
-    elif last_25_ticks.iloc[-1]['price'] < last_25_ticks.iloc[0]['price']:
-        return "Buy", "Detected a 25-tick downtrend."
-    else:
-        return "Neutral", "No clear 25-tick trend detected."
+    # Get the last 5 ticks for the confirmation check
+    last_5_ticks = df_ticks.tail(5).copy()
+
+    # Determine the trend of the last 30 ticks
+    trend_30 = "Neutral"
+    if last_30_ticks.iloc[-1]['price'] > last_30_ticks.iloc[0]['price']:
+        trend_30 = "Sell"
+    elif last_30_ticks.iloc[-1]['price'] < last_30_ticks.iloc[0]['price']:
+        trend_30 = "Buy"
+
+    # Determine the trend of the last 5 ticks
+    trend_5 = "Neutral"
+    if last_5_ticks.iloc[-1]['price'] > last_5_ticks.iloc[0]['price']:
+        trend_5 = "Sell"
+    elif last_5_ticks.iloc[-1]['price'] < last_5_ticks.iloc[0]['price']:
+        trend_5 = "Buy"
+    
+    # Check if both trends are the same and not neutral
+    if trend_30 == trend_5 and trend_30 != "Neutral":
+        if trend_30 == "Sell":
+            return "Sell", "Confirmed 30-tick and 5-tick uptrend."
+        else:
+            return "Buy", "Confirmed 30-tick and 5-tick downtrend."
+    
+    return "Neutral", "No clear signal from combined analysis."
 
 def run_trading_job_for_user(session_data, check_only=False):
     """Executes the trading logic for a specific user's session."""
@@ -405,7 +425,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                 update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=None, trade_start_time=None)
             
             # Get latest ticks for analysis
-            req = {"ticks_history": "R_100", "end": "latest", "count": 25, "style": "ticks"}
+            req = {"ticks_history": "R_100", "end": "latest", "count": 30, "style": "ticks"}
             ws.send(json.dumps(req))
             tick_data = None
             # Wait for the ticks history response
@@ -536,7 +556,7 @@ def bot_loop():
                     # 1. No contract is currently active (contract_id is None)
                     # 2. It's a suitable time to place a trade (e.g., second is 55, for end of minute cycle)
                     # 3. The session is still marked as running
-                    elif now.second == 50: # Trigger trade placement logic at the end of a minute cycle
+                    elif now.second == 0: # Trigger trade placement logic at the end of a minute cycle
                         re_checked_session_data = get_session_status_from_db(email) # Re-fetch data just in case
                         if re_checked_session_data and re_checked_session_data.get('is_running') == 1 and not re_checked_session_data.get('contract_id'):
                              # The check_only=False ensures it will attempt to place a new trade
