@@ -284,10 +284,10 @@ def analyse_data(df_ticks):
     
     # Check if the overall trend is up (last tick price > first tick price)
     if last_5_ticks.iloc[-1]['price'] > last_5_ticks.iloc[0]['price']:
-        return "Sell", "Detected a 5-tick uptrend."
+        return "Buy", "Detected a 5-tick uptrend."
     # Check if the overall trend is down (last tick price < first tick price)
     elif last_5_ticks.iloc[-1]['price'] < last_5_ticks.iloc[0]['price']:
-        return "Buy", "Detected a 5-tick downtrend."
+        return "Sell", "Detected a 5-tick downtrend."
     else:
         return "Neutral", "No clear 5-tick trend detected."
 
@@ -378,7 +378,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                         proposal_req = {
                             "proposal": 1, "amount": amount_rounded, "basis": "stake",
                             "contract_type": contract_type, "currency": currency,
-                            "duration": 20, "duration_unit": "s", "symbol": "R_100"
+                            "duration": 5, "duration_unit": "t", "symbol": "R_100"
                         }
                         ws.send(json.dumps(proposal_req))
                         proposal_response = json.loads(ws.recv())
@@ -424,10 +424,10 @@ def bot_loop():
                     trade_start_time = latest_session_data.get('trade_start_time')
                     
                     if contract_id:
-                        if (time.time() - trade_start_time) >= 30: 
+                        if (time.time() - trade_start_time) >= 20: 
                             run_trading_job_for_user(latest_session_data, check_only=True)
                     
-                    elif now.second == 5:
+                    elif now.second == 55:
                         re_checked_session_data = get_session_status_from_db(email)
                         if re_checked_session_data and not re_checked_session_data.get('contract_id'):
                             run_trading_job_for_user(re_checked_session_data, check_only=False)
