@@ -315,17 +315,17 @@ def analyse_data(df_ticks):
     """
     Analyzes tick data to generate a trading signal based on a 5-tick trend.
     """
-    if len(df_ticks) < 5:
+    if len(df_ticks) < 25:
         return "Neutral", "Insufficient data. Need at least 5 ticks."
 
-    last_5_ticks = df_ticks.tail(5).copy()
+    last_25_ticks = df_ticks.tail(25).copy()
     
-    if last_5_ticks.iloc[-1]['price'] > last_5_ticks.iloc[0]['price']:
-        return "Sell", "Detected a 5-tick uptrend."
-    elif last_5_ticks.iloc[-1]['price'] < last_5_ticks.iloc[0]['price']:
-        return "Buy", "Detected a 5-tick downtrend."
+    if last_25_ticks.iloc[-1]['price'] > last_25_ticks.iloc[0]['price']:
+        return "Sell", "Detected a 25-tick uptrend."
+    elif last_25_ticks.iloc[-1]['price'] < last_25_ticks.iloc[0]['price']:
+        return "Buy", "Detected a 25-tick downtrend."
     else:
-        return "Neutral", "No clear 5-tick trend detected."
+        return "Neutral", "No clear 25-tick trend detected."
 
 def run_trading_job_for_user(session_data, check_only=False):
     """Executes the trading logic for a specific user's session."""
@@ -405,7 +405,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                 update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=None, trade_start_time=None)
             
             # Get latest ticks for analysis
-            req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
+            req = {"ticks_history": "R_100", "end": "latest", "count": 25, "style": "ticks"}
             ws.send(json.dumps(req))
             tick_data = None
             # Wait for the ticks history response
@@ -536,7 +536,7 @@ def bot_loop():
                     # 1. No contract is currently active (contract_id is None)
                     # 2. It's a suitable time to place a trade (e.g., second is 55, for end of minute cycle)
                     # 3. The session is still marked as running
-                    elif now.second == 55: # Trigger trade placement logic at the end of a minute cycle
+                    elif now.second == 50: # Trigger trade placement logic at the end of a minute cycle
                         re_checked_session_data = get_session_status_from_db(email) # Re-fetch data just in case
                         if re_checked_session_data and re_checked_session_data.get('is_running') == 1 and not re_checked_session_data.get('contract_id'):
                              # The check_only=False ensures it will attempt to place a new trade
@@ -646,8 +646,8 @@ if st.session_state.logged_in:
             max_consecutive_losses_val = st.session_state.stats.get('max_consecutive_losses', 5)
         
         user_token = st.text_input("Deriv API Token", type="password", value=user_token_val, disabled=is_user_bot_running_in_db)
-        base_amount = st.number_input("Base Bet Amount", min_value=0.5, value=base_amount_val, step=0.1, disabled=is_user_bot_running_in_db)
-        tp_target = st.number_input("Take Profit Target", min_value=10.0, value=tp_target_val, step=5.0, disabled=is_user_bot_running_in_db)
+        base_amount = st.number_input("Base Bet Amount", min_value=0.35, value=base_amount_val, step=0.1, disabled=is_user_bot_running_in_db)
+        tp_target = st.number_input("Take Profit Target", min_value=10.0, value=tp_target_val, step=3.0, disabled=is_user_bot_running_in_db)
         max_consecutive_losses = st.number_input("Max Consecutive Losses", min_value=1, value=max_consecutive_losses_val, step=1, disabled=is_user_bot_running_in_db)
         
         col_start, col_stop = st.columns(2)
