@@ -8,6 +8,7 @@ import decimal
 import sqlite3
 import pandas as pd
 from datetime import datetime
+from multiprocessing import Process
 
 # --- SQLite Database Configuration ---
 DB_FILE = "trading_data.db"
@@ -403,11 +404,12 @@ def run_trading_job_for_user(session_data, check_only=False):
 
 def bot_loop():
     """Main loop that orchestrates trading jobs for all active sessions."""
+    # This is a key change: now the bot loop can handle its own state and heartbeat
+    # without relying on Streamlit's process.
     while True:
         try:
             now = datetime.now()
             
-            # This is the heartbeat. It lets other processes know this bot is alive.
             update_bot_running_status(1)
 
             active_sessions = get_all_active_sessions()
@@ -440,27 +442,28 @@ def bot_loop():
 st.set_page_config(page_title="Khoury Bot", layout="wide")
 st.title("Khoury Bot")
 
-# --- Initialize Session State ---
+# --- Initialize Session State and Process Management ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "user_email" not in st.session_state:
     st.session_state.user_email = ""
 if "stats" not in st.session_state:
     st.session_state.stats = None
-    
+if "bot_process" not in st.session_state:
+    st.session_state.bot_process = None
+
 create_table_if_not_exists()
 
-# --- Start Background Bot Thread ---
-# Now, we rely on the database for the global bot status
-if get_bot_running_status() == 0:
+# --- Start Background Bot Process (NEW LOGIC) ---
+# Check if the process is not running or has died.
+if st.session_state.bot_process is None or not st.session_state.bot_process.is_alive():
     try:
-        # Create and start the bot thread
-        bot_thread = threading.Thread(target=bot_loop, daemon=True)
-        bot_thread.start()
-        # The bot_loop itself will update the status in the DB
+        # Create and start the bot process using multiprocessing.
+        st.session_state.bot_process = Process(target=bot_loop, daemon=True)
+        st.session_state.bot_process.start()
     except Exception as e:
-        pass
-    
+        st.error(f"❌ فشل تشغيل عملية البوت: {e}")
+
 # --- Login Section ---
 if not st.session_state.logged_in:
     st.markdown("---")
@@ -475,7 +478,7 @@ if not st.session_state.logged_in:
             st.session_state.user_email = email_input
             st.rerun()
         else:
-            st.error("❌ This email is not active. Please contact the administrator.")
+            st.error("❌ هذا البريد الإلكتروني غير نشط. يرجى الاتصال بالمسؤول.")
 
 # --- Main Application Section (after login) ---
 if st.session_state.logged_in:
@@ -541,9 +544,9 @@ if st.session_state.logged_in:
     stats_placeholder = st.empty()
     
     if is_user_bot_running:
-        st.success("🟢 Your bot is *RUNNING*.")
+        st.success("🟢 Your bot is RUNNING.")
     else:
-        st.error("🔴 Your bot is *STOPPED*.")
+        st.error("🔴 Your bot is STOPPED.")
 
     if st.session_state.user_email:
         session_data = get_session_status_from_db(st.session_state.user_email)
@@ -573,6 +576,6 @@ if st.session_state.logged_in:
     else:
         with stats_placeholder.container():
             st.info("The bot is currently stopped.")
-            
+    
     time.sleep(1)
     st.rerun()
