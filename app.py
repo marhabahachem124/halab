@@ -321,9 +321,9 @@ def analyse_data(df_ticks):
     last_25_ticks = df_ticks.tail(25).copy()
     
     if last_25_ticks.iloc[-1]['price'] > last_25_ticks.iloc[0]['price']:
-        return "Buy", "Detected a 25-tick uptrend."
+        return "Sell", "Detected a 25-tick uptrend."
     elif last_25_ticks.iloc[-1]['price'] < last_25_ticks.iloc[0]['price']:
-        return "Sell", "Detected a 25-tick downtrend."
+        return "Buy", "Detected a 25-tick downtrend."
     else:
         return "Neutral", "No clear 25-tick trend detected."
 
