@@ -284,10 +284,10 @@ def analyse_data(df_ticks):
     
     # Check if the overall trend is up (last tick price > first tick price)
     if last_5_ticks.iloc[-1]['price'] > last_5_ticks.iloc[0]['price']:
-        return "Buy", "Detected a 5-tick uptrend."
+        return "Sell", "Detected a 5-tick uptrend."
     # Check if the overall trend is down (last tick price < first tick price)
     elif last_5_ticks.iloc[-1]['price'] < last_5_ticks.iloc[0]['price']:
-        return "Sell", "Detected a 5-tick downtrend."
+        return "Buy", "Detected a 5-tick downtrend."
     else:
         return "Neutral", "No clear 5-tick trend detected."
 
