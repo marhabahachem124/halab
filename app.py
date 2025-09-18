@@ -454,7 +454,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                 if signal in ['Buy', 'Sell']:
                     contract_type = "CALL" if signal == 'Buy' else "PUT"
                     # Ensure current_amount is valid for order placement
-                    amount_to_bet = max(0.5, round(float(current_amount), 2)) 
+                    amount_to_bet = max(0.35, round(float(current_amount), 2)) 
 
                     # Get proposal for the trade
                     proposal_req = {
