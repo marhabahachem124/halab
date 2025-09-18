@@ -313,18 +313,18 @@ def place_order(ws, proposal_id, amount):
 # --- Trading Bot Logic ---
 def analyse_data(df_ticks):
     """
-    Analyzes tick data to generate a trading signal based on a 30-tick and 5-tick trend.
+    Analyzes tick data to generate a trading signal based on a 60-tick and 5-tick trend.
     """
-    if len(df_ticks) < 60: # Changed from 25 to 30
+    if len(df_ticks) < 60: 
         return "Neutral", "Insufficient data. Need at least 60 ticks."
 
-    # Get the last 30 ticks for the main trend analysis
+    # Get the last 60 ticks for the main trend analysis
     last_60_ticks = df_ticks.tail(60).copy()
     
     # Get the last 5 ticks for the confirmation check
     last_5_ticks = df_ticks.tail(5).copy()
 
-    # Determine the trend of the last 30 ticks
+    # Determine the trend of the last 60 ticks
     trend_60 = "Neutral"
     if last_60_ticks.iloc[-1]['price'] > last_60_ticks.iloc[0]['price']:
         trend_60 = "Sell"
@@ -338,15 +338,16 @@ def analyse_data(df_ticks):
     elif last_5_ticks.iloc[-1]['price'] < last_5_ticks.iloc[0]['price']:
         trend_5 = "Buy"
     
-    # Check if both trends are the same and not neutral
-    if trend_60 == trend_5 and trend_60 != "Neutral":
-        if trend_60 == "Sell":
-            return "Buy", "Confirmed 60-tick and 5-tick uptrend."
+    # Check if the trends are different and not neutral
+    if trend_60 != trend_5 and trend_60 != "Neutral" and trend_5 != "Neutral":
+        # The trade direction should be based on the short-term trend (5 ticks)
+        # as it's a reversal strategy
+        if trend_5 == "Sell":
+            return "Sell", "Detected a downtrend reversal on 5 ticks against a 60-tick uptrend."
         else:
-            return "Sell", "Confirmed 60-tick and 5-tick downtrend."
+            return "Buy", "Detected an uptrend reversal on 5 ticks against a 60-tick downtrend."
     
-    return "Neutral", "No clear signal from combined analysis."
-
+    return "Neutral", "No clear reversal signal from combined analysis."
 def run_trading_job_for_user(session_data, check_only=False):
     """Executes the trading logic for a specific user's session."""
     email = session_data['email']
