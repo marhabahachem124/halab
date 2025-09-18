@@ -315,21 +315,21 @@ def analyse_data(df_ticks):
     """
     Analyzes tick data to generate a trading signal based on a 30-tick and 5-tick trend.
     """
-    if len(df_ticks) < 30: # Changed from 25 to 30
-        return "Neutral", "Insufficient data. Need at least 30 ticks."
+    if len(df_ticks) < 60: # Changed from 25 to 30
+        return "Neutral", "Insufficient data. Need at least 60 ticks."
 
     # Get the last 30 ticks for the main trend analysis
-    last_30_ticks = df_ticks.tail(30).copy()
+    last_60_ticks = df_ticks.tail(60).copy()
     
     # Get the last 5 ticks for the confirmation check
     last_5_ticks = df_ticks.tail(5).copy()
 
     # Determine the trend of the last 30 ticks
-    trend_30 = "Neutral"
-    if last_30_ticks.iloc[-1]['price'] > last_30_ticks.iloc[0]['price']:
-        trend_30 = "Sell"
-    elif last_30_ticks.iloc[-1]['price'] < last_30_ticks.iloc[0]['price']:
-        trend_30 = "Buy"
+    trend_60 = "Neutral"
+    if last_60_ticks.iloc[-1]['price'] > last_60_ticks.iloc[0]['price']:
+        trend_60 = "Sell"
+    elif last_60_ticks.iloc[-1]['price'] < last_60_ticks.iloc[0]['price']:
+        trend_60 = "Buy"
 
     # Determine the trend of the last 5 ticks
     trend_5 = "Neutral"
@@ -339,11 +339,11 @@ def analyse_data(df_ticks):
         trend_5 = "Buy"
     
     # Check if both trends are the same and not neutral
-    if trend_30 == trend_5 and trend_30 != "Neutral":
-        if trend_30 == "Sell":
-            return "Sell", "Confirmed 30-tick and 5-tick uptrend."
+    if trend_60 == trend_5 and trend_60 != "Neutral":
+        if trend_60 == "Sell":
+            return "Sell", "Confirmed 60-tick and 5-tick uptrend."
         else:
-            return "Buy", "Confirmed 30-tick and 5-tick downtrend."
+            return "Buy", "Confirmed 60-tick and 5-tick downtrend."
     
     return "Neutral", "No clear signal from combined analysis."
 
@@ -425,7 +425,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                 update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=None, trade_start_time=None)
             
             # Get latest ticks for analysis
-            req = {"ticks_history": "R_100", "end": "latest", "count": 30, "style": "ticks"}
+            req = {"ticks_history": "R_100", "end": "latest", "count": 60, "style": "ticks"}
             ws.send(json.dumps(req))
             tick_data = None
             # Wait for the ticks history response
