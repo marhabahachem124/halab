@@ -341,9 +341,9 @@ def analyse_data(df_ticks):
     # Check if both trends are the same and not neutral
     if trend_60 == trend_5 and trend_60 != "Neutral":
         if trend_60 == "Sell":
-            return "Sell", "Confirmed 60-tick and 5-tick uptrend."
+            return "Buy", "Confirmed 60-tick and 5-tick uptrend."
         else:
-            return "Buy", "Confirmed 60-tick and 5-tick downtrend."
+            return "Sell", "Confirmed 60-tick and 5-tick downtrend."
     
     return "Neutral", "No clear signal from combined analysis."
 
@@ -382,7 +382,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                     consecutive_losses += 1
                     total_losses += 1
                     # Martingale logic: double stake, but not less than base_amount
-                    next_bet = float(current_amount) * 2.2 
+                    next_bet = float(current_amount) * 2.1 
                     current_amount = max(base_amount, next_bet)
                 else: # Profit is 0 (e.g., trade ended with no change or cancelled)
                     consecutive_losses = 0 # Or decide how to handle this
@@ -655,15 +655,15 @@ if st.session_state.logged_in:
     with st.form("settings_and_control"):
         st.subheader("Bot Settings and Control")
         user_token_val = ""
-        base_amount_val = 0.5
-        tp_target_val = 20.0
-        max_consecutive_losses_val = 5
+        base_amount_val = 0.35
+        tp_target_val = 10.0
+        max_consecutive_losses_val = 3
         
         if st.session_state.stats:
             user_token_val = st.session_state.stats.get('user_token', '')
-            base_amount_val = st.session_state.stats.get('base_amount', 0.5)
-            tp_target_val = st.session_state.stats.get('tp_target', 20.0)
-            max_consecutive_losses_val = st.session_state.stats.get('max_consecutive_losses', 5)
+            base_amount_val = st.session_state.stats.get('base_amount', 0.35)
+            tp_target_val = st.session_state.stats.get('tp_target', 10.0)
+            max_consecutive_losses_val = st.session_state.stats.get('max_consecutive_losses', 3)
         
         user_token = st.text_input("Deriv API Token", type="password", value=user_token_val, disabled=is_user_bot_running_in_db)
         base_amount = st.number_input("Base Bet Amount", min_value=0.35, value=base_amount_val, step=0.1, disabled=is_user_bot_running_in_db)
