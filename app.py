@@ -342,7 +342,7 @@ def analyse_data(df_ticks):
     if trend_60 == trend_5 and trend_60 != "Neutral" and trend_5 != "Neutral":
         # The trade direction should be based on the short-term trend (5 ticks)
         # as it's a reversal strategy
-        if trend_60 == "Sell":
+        if trend_60 == "Buy":
             return "Sell", "Detected a downtrend reversal on 5 ticks against a 60-tick uptrend."
         else:
             return "Buy", "Detected an uptrend reversal on 5 ticks against a 60-tick downtrend."
