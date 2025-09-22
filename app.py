@@ -12,7 +12,7 @@ from datetime import datetime
 import multiprocessing
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data003322.db"
+DB_FILE = "trading_data003355.db"
 
 # --- Database & Utility Functions ---
 def create_connection():
@@ -322,7 +322,7 @@ def analyse_data(df_ticks):
     last_60_ticks = df_ticks.tail(60).copy()
     
     # Get the last 5 ticks for the confirmation check
-    last_5_ticks = df_ticks.tail(5).copy()
+    last_30_ticks = df_ticks.tail(30).copy()
 
     # Determine the trend of the last 60 ticks
     trend_60 = "Neutral"
@@ -332,20 +332,20 @@ def analyse_data(df_ticks):
         trend_60 = "Buy"
 
     # Determine the trend of the last 5 ticks
-    trend_5 = "Neutral"
-    if last_5_ticks.iloc[-1]['price'] > last_5_ticks.iloc[0]['price']:
+    trend_30 = "Neutral"
+    if last_30_ticks.iloc[-1]['price'] > last_30_ticks.iloc[0]['price']:
         trend_5 = "Sell"
-    elif last_5_ticks.iloc[-1]['price'] < last_5_ticks.iloc[0]['price']:
-        trend_5 = "Buy"
+    elif last_30_ticks.iloc[-1]['price'] < last_30_ticks.iloc[0]['price']:
+        trend_30 = "Buy"
     
     # Check if the trends are different and not neutral
-    if trend_60 == trend_5 and trend_60 != "Neutral" and trend_5 != "Neutral":
-        # The trade direction should be based on the short-term trend (5 ticks)
+    if trend_60 == trend_30 and trend_60 != "Neutral" and trend_30 != "Neutral":
+        # The trade direction should be based on the short-term trend (30 ticks)
         # as it's a reversal strategy
         if trend_60 == "Buy":
-            return "Sell", "Detected a downtrend reversal on 5 ticks against a 60-tick uptrend."
+            return "Buy", "Detected a downtrend reversal on 5 ticks against a 60-tick uptrend."
         else:
-            return "Buy", "Detected an uptrend reversal on 5 ticks against a 60-tick downtrend."
+            return "Sell", "Detected an uptrend reversal on 5 ticks against a 60-tick downtrend."
     
     return "Neutral", "No clear reversal signal from combined analysis."
 def run_trading_job_for_user(session_data, check_only=False):
@@ -710,11 +710,7 @@ if st.session_state.logged_in:
     else:
         st.error("🔴 *Global Bot Service is STOPPED*.")
 
-    # Display user session status
-    if is_user_bot_running_in_db:
-        st.success(f"🟢 Your session for *{st.session_state.user_email}* is RUNNING.")
-    else:
-        st.warning(f"🔴 Your session for *{st.session_state.user_email}* is STOPPED.")
+   
 
     if st.session_state.user_email:
         session_data = get_session_status_from_db(st.session_state.user_email)
