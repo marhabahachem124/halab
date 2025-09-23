@@ -12,7 +12,7 @@ from datetime import datetime
 import multiprocessing
 
 # --- SQLite Database Configuration ---
-DB_FILE = "trading_data003355.db"
+DB_FILE = "trading_data0099.db"
 
 # --- Database & Utility Functions ---
 def create_connection():
@@ -342,7 +342,7 @@ def analyse_data(df_ticks):
     if trend_60 == trend_30 and trend_60 != "Neutral" and trend_30 != "Neutral":
         # The trade direction should be based on the short-term trend (30 ticks)
         # as it's a reversal strategy
-        if trend_60 == "Sell":
+        if trend_60 == "Buy":
             return "Buy", "Detected a downtrend reversal on 5 ticks against a 60-tick uptrend."
         else:
             return "Sell", "Detected an uptrend reversal on 5 ticks against a 60-tick downtrend."
@@ -461,7 +461,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                     proposal_req = {
                         "proposal": 1, "amount": amount_to_bet, "basis": "stake",
                         "contract_type": contract_type, "currency": currency,
-                        "duration": 10, "duration_unit": "t", "symbol": "R_100"
+                        "duration": 5, "duration_unit": "t", "symbol": "R_100"
                     }
                     ws.send(json.dumps(proposal_req))
                     
@@ -548,7 +548,7 @@ def bot_loop():
                     if contract_id:
                         # Check if trade duration exceeds a reasonable limit (e.g., 20 seconds for 5-tick trades)
                         # This ensures we don't miss closing an open trade if something goes wrong
-                        if (time.time() - trade_start_time) >= 25: 
+                        if (time.time() - trade_start_time) >= 15: 
                             print(f"User {email}: Trade {contract_id} might be stuck, checking status...")
                             run_trading_job_for_user(latest_session_data, check_only=True) # check_only=True to only process completed trades and stop criteria
                     
