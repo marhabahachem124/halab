@@ -315,34 +315,22 @@ def analyse_data(df_ticks):
     """
     Analyzes tick data to generate a trading signal based on a 60-tick and 5-tick trend.
     """
-    if len(df_ticks) < 60: 
+    if len(df_ticks) < 5: 
         return "Neutral", "Insufficient data. Need at least 60 ticks."
 
     # Get the last 60 ticks for the main trend analysis
-    last_60_ticks = df_ticks.tail(60).copy()
-    
-    # Get the last 5 ticks for the confirmation check
-    last_30_ticks = df_ticks.tail(30).copy()
+    last_5_ticks = df_ticks.tail(5).copy()
+ 
 
     # Determine the trend of the last 60 ticks
-    trend_60 = "Neutral"
-    if last_60_ticks.iloc[-1]['price'] > last_60_ticks.iloc[0]['price']:
-        trend_60 = "Sell"
-    elif last_60_ticks.iloc[-1]['price'] < last_60_ticks.iloc[0]['price']:
-        trend_60 = "Buy"
-
-    # Determine the trend of the last 5 ticks
-    trend_30 = "Neutral"
-    if last_30_ticks.iloc[-1]['price'] > last_30_ticks.iloc[0]['price']:
+    trend_5 = "Neutral"
+    if last_5_ticks.iloc[-1]['price'] > last_5_ticks.iloc[0]['price']:
         trend_5 = "Sell"
-    elif last_30_ticks.iloc[-1]['price'] < last_30_ticks.iloc[0]['price']:
-        trend_30 = "Buy"
-    
-    # Check if the trends are different and not neutral
-    if trend_60 == trend_30 and trend_60 != "Neutral" and trend_30 != "Neutral":
-        # The trade direction should be based on the short-term trend (30 ticks)
-        # as it's a reversal strategy
-        if trend_60 == "Buy":
+    elif last_5_ticks.iloc[-1]['price'] < last_5_ticks.iloc[0]['price']:
+        trend_5 = "Buy"
+
+ 
+        if trend_5 == "Buy":
             return "Buy", "Detected a downtrend reversal on 5 ticks against a 60-tick uptrend."
         else:
             return "Sell", "Detected an uptrend reversal on 5 ticks against a 60-tick downtrend."
@@ -426,7 +414,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                 update_stats_and_trade_info_in_db(email, total_wins, total_losses, current_amount, consecutive_losses, initial_balance=initial_balance, contract_id=None, trade_start_time=None)
             
             # Get latest ticks for analysis
-            req = {"ticks_history": "R_100", "end": "latest", "count": 60, "style": "ticks"}
+            req = {"ticks_history": "R_100", "end": "latest", "count": 5, "style": "ticks"}
             ws.send(json.dumps(req))
             tick_data = None
             # Wait for the ticks history response
@@ -461,7 +449,7 @@ def run_trading_job_for_user(session_data, check_only=False):
                     proposal_req = {
                         "proposal": 1, "amount": amount_to_bet, "basis": "stake",
                         "contract_type": contract_type, "currency": currency,
-                        "duration": 5, "duration_unit": "t", "symbol": "R_100"
+                        "duration": 1, "duration_unit": "t", "symbol": "R_100"
                     }
                     ws.send(json.dumps(proposal_req))
                     
@@ -548,7 +536,7 @@ def bot_loop():
                     if contract_id:
                         # Check if trade duration exceeds a reasonable limit (e.g., 20 seconds for 5-tick trades)
                         # This ensures we don't miss closing an open trade if something goes wrong
-                        if (time.time() - trade_start_time) >= 15: 
+                        if (time.time() - trade_start_time) >= 5: 
                             print(f"User {email}: Trade {contract_id} might be stuck, checking status...")
                             run_trading_job_for_user(latest_session_data, check_only=True) # check_only=True to only process completed trades and stop criteria
                     
