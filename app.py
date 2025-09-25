@@ -315,22 +315,22 @@ def analyse_data(df_ticks):
     """
     Analyzes tick data to generate a trading signal based on a 60-tick and 5-tick trend.
     """
-    if len(df_ticks) < 28: 
+    if len(df_ticks) < 30: 
         return "Neutral", "Insufficient data. Need at least 60 ticks."
 
     # Get the last 60 ticks for the main trend analysis
-    last_28_ticks = df_ticks.tail(28).copy()
+    last_30_ticks = df_ticks.tail(30).copy()
  
 
     # Determine the trend of the last 60 ticks
-    trend_28 = "Neutral"
-    if last_28_ticks.iloc[-1]['price'] > last_28_ticks.iloc[0]['price']:
-        trend_28 = "Buy"
-    elif last_28_ticks.iloc[-1]['price'] < last_28_ticks.iloc[0]['price']:
-        trend_28 = "Sell"
+    trend_30 = "Neutral"
+    if last_30_ticks.iloc[-1]['price'] > last_30_ticks.iloc[0]['price']:
+        trend_30 = "Buy"
+    elif last_30_ticks.iloc[-1]['price'] < last_30_ticks.iloc[0]['price']:
+        trend_30 = "Sell"
 
  
-        if trend_28 == "Buy":
+        if trend_30 == "Buy":
             return "Buy", "Detected a downtrend reversal on 5 ticks against a 60-tick uptrend."
         else:
             return "Sell", "Detected an uptrend reversal on 5 ticks against a 60-tick downtrend."
@@ -545,7 +545,7 @@ def bot_loop():
                     # 1. No contract is currently active (contract_id is None)
                     # 2. It's a suitable time to place a trade (e.g., second is 55, for end of minute cycle)
                     # 3. The session is still marked as running
-                    elif now.second == 59: # Trigger trade placement logic at the end of a minute cycle
+                    elif now.second == 0: # Trigger trade placement logic at the end of a minute cycle
                         re_checked_session_data = get_session_status_from_db(email) # Re-fetch data just in case
                         if re_checked_session_data and re_checked_session_data.get('is_running') == 1 and not re_checked_session_data.get('contract_id'):
                              # The check_only=False ensures it will attempt to place a new trade
